@@ -1,0 +1,39 @@
+package com.ewallet.validator;
+
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+import static com.ewallet.common.Constants.*;
+
+/**
+ * Used for validating iban numbers
+ */
+@Slf4j(topic = "ibanValidator")
+@RequiredArgsConstructor
+public class IbanValidator implements ConstraintValidator<ValidIban, String> {
+
+    @Override
+    public boolean isValid(String iban, ConstraintValidatorContext context) {
+        String trimmed = iban.trim();
+        if (trimmed.length() < iban_MIN_SIZE || trimmed.length() > iban_MAX_SIZE) {
+            return false;
+        }
+        String reformat = trimmed.substring(4) + trimmed.substring(0, 4);
+        long total = 0;
+
+        for (int i = 0; i < reformat.length(); i++) {
+            int charValue = Character.getNumericValue(reformat.charAt(i));
+
+            if (charValue < 0 || charValue > 35)
+                return false;
+
+            total = (charValue > 9 ? total * 100 : total * 10) + charValue;
+
+            if (total > iban_MAX)
+                total = (total % iban_MODULUS);
+        }
+        return (total % iban_MODULUS) == 1;
+    }
+}
