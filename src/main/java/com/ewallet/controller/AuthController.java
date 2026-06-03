@@ -18,7 +18,6 @@ import java.time.Instant;
 
 import static com.ewallet.common.Constants.SUCCESS;
 
-@CrossOrigin(origins = "http://localhost:8080/")
 @RestController
 @RequestMapping("/api/v1/auth")
 @RequiredArgsConstructor
@@ -27,34 +26,24 @@ public class AuthController {
     private final Clock clock;
     private final AuthService authService;
 
-    /**
-     * Authenticates users by their credentials
-     *
-     * @param request
-     * @return JwtResponse
-     */
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<JwtResponse>> login(@Valid @RequestBody LoginRequest request) {
-        final JwtResponse response = authService.login(request);
+        JwtResponse response = authService.login(request);
         return ResponseEntity.ok(new ApiResponse<>(Instant.now(clock).toEpochMilli(), SUCCESS, response));
     }
 
-    /**
-     * Registers users using their credentials and user info
-     *
-     * @param request
-     * @return id of the registered user
-     */
     @PostMapping("/signup")
     public ResponseEntity<ApiResponse<CommandResponse>> signup(@Valid @RequestBody SignupRequest request) {
-        final CommandResponse response = authService.signup(request);
+        CommandResponse response = authService.signup(request);
         return ResponseEntity
                 .status(HttpStatus.CREATED)
                 .body(new ApiResponse<>(Instant.now(clock).toEpochMilli(), SUCCESS, response));
     }
 
-    @PostMapping ("/refresh-token")
-    public ResponseEntity<?> getAccessToken(@RequestHeader(HttpHeaders.AUTHORIZATION) String authorizationHeader){
-        return ResponseEntity.ok(authService.getAccessTokenUsingRefreshToken(authorizationHeader));
+    @PostMapping("/refresh-token")
+    public ResponseEntity<ApiResponse<JwtResponse>> getAccessToken(
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorizationHeader) {
+        JwtResponse response = authService.getAccessTokenUsingRefreshToken(authorizationHeader);
+        return ResponseEntity.ok(new ApiResponse<>(Instant.now(clock).toEpochMilli(), SUCCESS, response));
     }
 }

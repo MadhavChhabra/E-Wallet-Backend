@@ -6,23 +6,27 @@ import com.ewallet.dto.request.TransactionRequest;
 import com.ewallet.dto.response.CommandResponse;
 import com.ewallet.dto.response.TransactionResponse;
 import com.ewallet.exception.NoSuchElementFoundException;
+import com.ewallet.model.BankAccount;
+import com.ewallet.model.OperationType;
+import com.ewallet.model.Status;
 import com.ewallet.model.Transaction;
+import com.ewallet.model.Type;
 import com.ewallet.repository.TransactionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 import static com.ewallet.common.Constants.*;
+import com.ewallet.security.CurrentUserService;
 
-/**
- * Service used for Transaction related operations
- */
 @Slf4j(topic = "TransactionService")
 @Service
 @RequiredArgsConstructor
@@ -31,75 +35,68 @@ public class TransactionService {
     private final TransactionRepository transactionRepository;
     private final TransactionRequestMapper transactionRequestMapper;
     private final TransactionResponseMapper transactionResponseMapper;
+    private final Clock clock;
+    private final CurrentUserService currentUserService;
 
-    /**
-     * Fetches a single transaction by the given id
-     *
-     * @param id
-     * @return TransactionResponse
-     */
     @Transactional(readOnly = true)
     public TransactionResponse findById(long id) {
-        return transactionRepository.findById(id)
-                .map(transactionResponseMapper::toDto)
+        Transaction transaction = transactionRepository.findById(id)
                 .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_TRANSACTION));
+        assertTransactionAccessible(transaction);
+        return transactionResponseMapper.toDto(transaction);
     }
 
-    /**
-     * Fetches a single transaction by the given referenceNumber
-     *
-     * @param referenceNumber
-     * @return TransactionResponse
-     */
     @Transactional(readOnly = true)
     public TransactionResponse findByReferenceNumber(UUID referenceNumber) {
-        return transactionRepository.findByReferenceNumber(referenceNumber)
-                .map(transactionResponseMapper::toDto)
+        Transaction transaction = transactionRepository.findByReferenceNumber(referenceNumber)
                 .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_TRANSACTION));
+        assertTransactionAccessible(transaction);
+        return transactionResponseMapper.toDto(transaction);
     }
 
-    /**
-     * Fetches all transaction by the given userId
-     *
-     * @param userId
-     * @return List of TransactionResponse
-     */
     @Transactional(readOnly = true)
-    public List<TransactionResponse> findAllByUserId(Long userId) {
-        final List<TransactionResponse> transactions = transactionRepository.findAllByUserId(userId).stream()
-                .map(transactionResponseMapper::toDto)
-                .toList();
-
-        if (transactions.isEmpty())
-            throw new NoSuchElementFoundException(NOT_FOUND_RECORD);
-        return transactions;
-    }
-
-    /**
-     * Fetches all transactions based on the given paging and sorting parameters
-     *
-     * @param pageable
-     * @return List of TransactionResponse
-     */
-    @Transactional(readOnly = true)
-    public Page<TransactionResponse> findAll(Pageable pageable) {
-        final Page<TransactionResponse> transactions = transactionRepository.findAll(pageable)
+    public Page<TransactionResponse> findAllByUserId(Long userId, Pageable pageable) {
+        currentUserService.assertUserIdMatchesCurrentUser(userId);
+        return transactionRepository.findAllByUserId(userId, pageable)
                 .map(transactionResponseMapper::toDto);
-        if (transactions.isEmpty())
-            throw new NoSuchElementFoundException(NOT_FOUND_RECORD);
-        return transactions;
     }
 
-    /**
-     * Creates a new transaction using the given request parameters
-     *
-     * @param request
-     * @return id of the created transaction
-     */
-    public CommandResponse create(TransactionRequest request) {
-        final Transaction transaction = transactionRequestMapper.toEntity(request);
+    @Transactional(readOnly = true)
+    public Page<TransactionResponse> findAllForCurrentUser(Pageable pageable) {
+        return transactionRepository.findAllByUserId(currentUserService.getCurrentUserId(), pageable)
+                .map(transactionResponseMapper::toDto);
+    }
+
+    @Transactional
+    public CommandResponse create(TransactionRequest request,
+                                  BankAccount fromAccount,
+                                  BankAccount toAccount,
+                                  Type type,
+                                  OperationType operationType) {
+        Transaction transaction = transactionRequestMapper.toEntity(request);
+        transaction.setFromBankAccount(fromAccount);
+        transaction.setToBankAccount(toAccount);
+        transaction.setType(type);
+        transaction.setOperationType(operationType);
+        transaction.setReferenceNumber(UUID.randomUUID());
+        transaction.setStatus(Status.SUCCESS);
+        transaction.setCreatedAt(LocalDateTime.now(clock));
+
         transactionRepository.save(transaction);
-        log.info(CREATED_TRANSACTION, new Object[]{transaction.getFromBankAccount().getIban(), transaction.getToBankAccount().getIban(), transaction.getAmount()});
+        log.info(CREATED_TRANSACTION,
+                transaction.getFromBankAccount().getIban(),
+                transaction.getToBankAccount().getIban(),
+                transaction.getAmount());
         return CommandResponse.builder().id(transaction.getId()).build();
+    }
+
+    private void assertTransactionAccessible(Transaction transaction) {
+        Long currentUserId = currentUserService.getCurrentUserId();
+        Long fromUserId = transaction.getFromBankAccount().getUser().getId();
+        Long toUserId = transaction.getToBankAccount().getUser().getId();
+
+        if (!currentUserId.equals(fromUserId) && !currentUserId.equals(toUserId)) {
+            throw new AccessDeniedException("You do not have access to this transaction");
+        }
     }
 }

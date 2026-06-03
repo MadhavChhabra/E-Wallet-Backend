@@ -10,9 +10,6 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-/**
- * Data Transfer Object for Transaction request
- */
 @Data
 public class TransactionRequest {
 
@@ -30,11 +27,11 @@ public class TransactionRequest {
 
     private Status status;
 
-    @NotBlank(message = "fromBankAccountiban.notblank}")
-    private String fromBankAccountiban;
+    @NotBlank(message = "{fromBankAccountIban.notblank}")
+    private String fromBankAccountIban;
 
-    @NotBlank(message = "{toBankAccountiban.notblank}")
-    private String toBankAccountiban;
+    @NotBlank(message = "{toBankAccountIban.notblank}")
+    private String toBankAccountIban;
 
     @NotNull(message = "{typeId.notnull}")
     private Long typeId;

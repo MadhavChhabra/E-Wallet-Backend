@@ -2,12 +2,13 @@ package com.ewallet;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 
-@SuppressWarnings("squid:S2699")
 @SpringBootTest
-class EBankAccountApplicationTests {
+@ActiveProfiles("test")
+class EWalletApplicationTests {
 
-	@Test
-	void contextLoads() {
-	}
+    @Test
+    void contextLoads() {
+    }
 }

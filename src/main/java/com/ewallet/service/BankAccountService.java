@@ -3,238 +3,298 @@ package com.ewallet.service;
 import com.ewallet.dto.mapper.BankAccountRequestMapper;
 import com.ewallet.dto.mapper.BankAccountResponseMapper;
 import com.ewallet.dto.mapper.BankAccountTransactionRequestMapper;
-import com.ewallet.dto.request.TransactionRequest;
 import com.ewallet.dto.request.BankAccountRequest;
-import com.ewallet.dto.response.CommandResponse;
+import com.ewallet.dto.request.TransactionRequest;
 import com.ewallet.dto.response.BankAccountResponse;
+import com.ewallet.dto.response.CommandResponse;
+import com.ewallet.exception.ConcurrentOperationException;
 import com.ewallet.exception.ElementAlreadyExistsException;
 import com.ewallet.exception.InsufficientFundsException;
 import com.ewallet.exception.NoSuchElementFoundException;
 import com.ewallet.model.BankAccount;
+import com.ewallet.model.OperationType;
+import com.ewallet.model.Type;
 import com.ewallet.repository.BankAccountRepository;
+import com.ewallet.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 import static com.ewallet.common.Constants.*;
 
-/**
- * Service used for BankAccount related operations
- */
 @Slf4j(topic = "BankAccountService")
 @Service
 @RequiredArgsConstructor
 public class BankAccountService {
 
-    private final BankAccountRepository BankAccountRepository;
+    private final BankAccountRepository bankAccountRepository;
     private final TransactionService transactionService;
-    private final BankAccountRequestMapper BankAccountRequestMapper;
-    private final BankAccountResponseMapper BankAccountResponseMapper;
-    private final BankAccountTransactionRequestMapper BankAccountTransactionRequestMapper;
+    private final BankAccountRequestMapper bankAccountRequestMapper;
+    private final BankAccountResponseMapper bankAccountResponseMapper;
+    private final BankAccountTransactionRequestMapper bankAccountTransactionRequestMapper;
+    private final TypeService typeService;
+    private final CurrentUserService currentUserService;
+    private final IdempotencyService idempotencyService;
+    private final RateLimitService rateLimitService;
 
-    /**
-     * Fetches a single BankAccount by the given id
-     *
-     * @param id
-     * @return BankAccountResponse
-     */
     @Transactional(readOnly = true)
     public BankAccountResponse findById(long id) {
-        return BankAccountRepository.findById(id)
-                .map(BankAccountResponseMapper::toDto)
+        BankAccount account = bankAccountRepository.findByIdWithUser(id)
                 .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
+        assertAccountOwnedByCurrentUser(account);
+        return bankAccountResponseMapper.toDto(account);
     }
 
-    /**
-     * Fetches a single BankAccount by the given iban
-     *
-     * @param iban
-     * @return BankAccountResponse
-     */
     @Transactional(readOnly = true)
-    public BankAccountResponse findByiban(String iban) {
-        return BankAccountRepository.findByiban(iban)
-                .map(BankAccountResponseMapper::toDto)
+    public BankAccountResponse findByIban(String iban) {
+        BankAccount account = bankAccountRepository.findByIbanWithUser(iban)
                 .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
+        assertAccountOwnedByCurrentUser(account);
+        return bankAccountResponseMapper.toDto(account);
     }
 
-    /**
-     * Fetches a single BankAccount by the given userId
-     *
-     * @param userId
-     * @return BankAccountResponse
-     */
     @Transactional(readOnly = true)
     public List<BankAccountResponse> findByUserId(long userId) {
-        return BankAccountRepository.findByUserId(userId).stream()
-                .map(BankAccountResponseMapper::toDto)
+        currentUserService.assertUserIdMatchesCurrentUser(userId);
+        return bankAccountRepository.findByUserId(userId).stream()
+                .map(bankAccountResponseMapper::toDto)
                 .toList();
     }
 
-    /**
-     * Fetches a single BankAccount reference (entity) by the given id
-     *
-     * @param iban
-     * @return BankAccount
-     */
-    public BankAccount getByiban(String iban) {
-        return BankAccountRepository.findByiban(iban)
-                .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
-    }
-
-    /**
-     * Fetches all BankAccounts based on the given paging and sorting parameters
-     *
-     * @param pageable
-     * @return List of BankAccountResponse
-     */
     @Transactional(readOnly = true)
-    public Page<BankAccountResponse> findAll(Pageable pageable) {
-        final Page<BankAccountResponse> BankAccounts = BankAccountRepository.findAll(pageable)
-                .map(BankAccountResponseMapper::toDto);
-        if (BankAccounts.isEmpty())
-            throw new NoSuchElementFoundException(NOT_FOUND_RECORD);
-        return BankAccounts;
+    public Page<BankAccountResponse> findAllForCurrentUser(Pageable pageable) {
+        return bankAccountRepository.findByUserId(currentUserService.getCurrentUserId(), pageable)
+                .map(bankAccountResponseMapper::toDto);
     }
 
-    /**
-     * Creates a new BankAccount using the given request parameters
-     *
-     * @param request
-     * @return id of the created BankAccount
-     */
     @Transactional
     public CommandResponse create(BankAccountRequest request) {
-        if (BankAccountRepository.existsByibanIgnoreCase(request.getIban()))
+        currentUserService.assertUserIdMatchesCurrentUser(request.getUserId());
+
+        if (bankAccountRepository.existsByIbanIgnoreCase(request.getIban())) {
             throw new ElementAlreadyExistsException(ALREADY_EXISTS_BankAccount_iban);
-        if (BankAccountRepository.existsByUserIdAndNameIgnoreCase(request.getUserId(), request.getName()))
+        }
+        if (bankAccountRepository.existsByUserIdAndNameIgnoreCase(request.getUserId(), request.getName())) {
             throw new ElementAlreadyExistsException(ALREADY_EXISTS_BankAccount_NAME);
+        }
 
-        final BankAccount BankAccount = BankAccountRequestMapper.toEntity(request);
-        BankAccountRepository.save(BankAccount);
-        log.info(CREATED_BankAccount, new Object[]{BankAccount.getIban(), BankAccount.getName(), BankAccount.getBalance()});
+        BankAccount bankAccount = bankAccountRequestMapper.toEntity(request);
+        bankAccountRepository.save(bankAccount);
+        log.info(CREATED_BankAccount, bankAccount.getIban(), bankAccount.getName(), bankAccount.getBalance());
 
-        // add this initial amount to the transactions
-        transactionService.create(BankAccountTransactionRequestMapper.toTransactionDto(request));
+        CommandResponse txResponse = transactionService.create(
+                bankAccountTransactionRequestMapper.toTransactionDto(request),
+                bankAccount, bankAccount, typeService.getReferenceById(1L), OperationType.INITIAL_DEPOSIT);
 
-        return CommandResponse.builder().id(BankAccount.getId()).build();
+        auditLog("CREATE_ACCOUNT", bankAccount.getIban(), bankAccount.getIban(),
+                request.getBalance(), txResponse.getId());
+
+        return CommandResponse.builder().id(bankAccount.getId()).build();
     }
 
-    /**
-     * Transfer funds between BankAccounts
-     *
-     * @param request
-     * @return id of the transaction
-     */
     @Transactional
-    public CommandResponse transferFunds(TransactionRequest request) {
-        final BankAccount toBankAccount = getByiban(request.getToBankAccountiban());
-        final BankAccount fromBankAccount = getByiban(request.getFromBankAccountiban());
-
-        // check if the balance of sender BankAccount has equal or higher to/than transfer amount
-        if (fromBankAccount.getBalance().compareTo(request.getAmount()) < 0)
-            throw new InsufficientFundsException(FUNDS_CANNOT_BELOW_ZERO);
-
-        // update balance of the sender BankAccount
-        fromBankAccount.setBalance(fromBankAccount.getBalance().subtract(request.getAmount()));
-
-        // update balance of the receiver BankAccount
-        toBankAccount.setBalance(toBankAccount.getBalance().add(request.getAmount()));
-
-        BankAccountRepository.save(toBankAccount);
-        log.info(UPDATED_BankAccount_BALANCES, new Object[]{fromBankAccount.getBalance(), toBankAccount.getBalance()});
-
-        final CommandResponse response = transactionService.create(request);
-        return CommandResponse.builder().id(response.getId()).build();
+    public CommandResponse transferFunds(TransactionRequest request, String idempotencyKey) {
+        return idempotencyService.execute(
+                idempotencyKey,
+                currentUserService.getCurrentUserId(),
+                "TRANSFER",
+                hashRequest(request),
+                () -> {
+                    checkMoneyOperationRateLimit();
+                    return doTransferFunds(request);
+                });
     }
 
-    /**
-     * Adds funds to the given BankAccount
-     *
-     * @param request
-     * @return id of the transaction
-     */
     @Transactional
-    public CommandResponse addFunds(TransactionRequest request) {
-        final BankAccount toBankAccount = getByiban(request.getToBankAccountiban());
-
-        // update balance of the receiver BankAccount
-        toBankAccount.setBalance(toBankAccount.getBalance().add(request.getAmount()));
-
-        BankAccountRepository.save(toBankAccount);
-        log.info(UPDATED_BankAccount_BALANCE, new Object[]{toBankAccount.getBalance()});
-
-        final CommandResponse response = transactionService.create(request);
-        return CommandResponse.builder()
-                .id(response.getId())
-                .build();
-
+    public CommandResponse addFunds(TransactionRequest request, String idempotencyKey) {
+        return idempotencyService.execute(
+                idempotencyKey,
+                currentUserService.getCurrentUserId(),
+                "DEPOSIT",
+                hashRequest(request),
+                () -> {
+                    checkMoneyOperationRateLimit();
+                    return doAddFunds(request);
+                });
     }
 
-    /**
-     * Withdraw funds from the given BankAccount
-     *
-     * @param request
-     * @return id of the transaction
-     */
     @Transactional
-    public CommandResponse withdrawFunds(TransactionRequest request) {
-        final BankAccount fromBankAccount = getByiban(request.getFromBankAccountiban());
-
-        // check if the balance of sender BankAccount has equal or higher to/than transfer amount
-        if (fromBankAccount.getBalance().compareTo(request.getAmount()) < 0)
-            throw new InsufficientFundsException(FUNDS_CANNOT_BELOW_ZERO);
-
-        // update balance of the sender BankAccount
-        fromBankAccount.setBalance(fromBankAccount.getBalance().subtract(request.getAmount()));
-
-        BankAccountRepository.save(fromBankAccount);
-        log.info(UPDATED_BankAccount_BALANCE, new Object[]{fromBankAccount.getBalance()});
-
-        final CommandResponse response = transactionService.create(request);
-        return CommandResponse.builder().id(response.getId()).build();
+    public CommandResponse withdrawFunds(TransactionRequest request, String idempotencyKey) {
+        return idempotencyService.execute(
+                idempotencyKey,
+                currentUserService.getCurrentUserId(),
+                "WITHDRAW",
+                hashRequest(request),
+                () -> {
+                    checkMoneyOperationRateLimit();
+                    return doWithdrawFunds(request);
+                });
     }
 
-    /**
-     * Updates BankAccount using the given request parameters
-     *
-     * @param request
-     * @return id of the updated BankAccount
-     */
+    @Transactional
     public CommandResponse update(BankAccountRequest request) {
-        final BankAccount foundBankAccount = BankAccountRepository.findById(request.getId())
+        currentUserService.assertUserIdMatchesCurrentUser(request.getUserId());
+
+        BankAccount foundAccount = bankAccountRepository.findByIdWithUser(request.getId())
                 .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
+        assertAccountOwnedByCurrentUser(foundAccount);
 
-        // check if the iban is changed and new iban is already exists
-        if (!request.getIban().equalsIgnoreCase(foundBankAccount.getIban()) &&
-                BankAccountRepository.existsByibanIgnoreCase(request.getIban()))
+        if (!request.getIban().equalsIgnoreCase(foundAccount.getIban())
+                && bankAccountRepository.existsByIbanIgnoreCase(request.getIban())) {
             throw new ElementAlreadyExistsException(ALREADY_EXISTS_BankAccount_iban);
-
-        // check if the name is changed and new name is already exists in user's BankAccounts
-        if (!request.getName().equalsIgnoreCase(foundBankAccount.getName()) &&
-                BankAccountRepository.existsByUserIdAndNameIgnoreCase(request.getUserId(), request.getName()))
+        }
+        if (!request.getName().equalsIgnoreCase(foundAccount.getName())
+                && bankAccountRepository.existsByUserIdAndNameIgnoreCase(request.getUserId(), request.getName())) {
             throw new ElementAlreadyExistsException(ALREADY_EXISTS_BankAccount_NAME);
+        }
 
-        final BankAccount BankAccount = BankAccountRequestMapper.toEntity(request);
-        BankAccountRepository.save(BankAccount);
-        log.info(UPDATED_BankAccount, new Object[]{BankAccount.getIban(), BankAccount.getName(), BankAccount.getBalance()});
-        return CommandResponse.builder().id(BankAccount.getId()).build();
+        BankAccount bankAccount = bankAccountRequestMapper.toEntity(request);
+        bankAccountRepository.save(bankAccount);
+        log.info(UPDATED_BankAccount, bankAccount.getIban(), bankAccount.getName(), bankAccount.getBalance());
+        return CommandResponse.builder().id(bankAccount.getId()).build();
     }
 
-    /**
-     * Deletes BankAccount by the given id
-     *
-     * @param id
-     */
+    @Transactional
     public void deleteById(long id) {
-        final BankAccount BankAccount = BankAccountRepository.findById(id)
+        BankAccount bankAccount = bankAccountRepository.findByIdWithUser(id)
                 .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
-        BankAccountRepository.delete(BankAccount);
-        log.info(DELETED_BankAccount, new Object[]{BankAccount.getIban(), BankAccount.getName(), BankAccount.getBalance()});
+        assertAccountOwnedByCurrentUser(bankAccount);
+        bankAccountRepository.delete(bankAccount);
+        log.info(DELETED_BankAccount, bankAccount.getIban(), bankAccount.getName(), bankAccount.getBalance());
+    }
+
+    BankAccount getByIban(String iban) {
+        return bankAccountRepository.findByIban(iban)
+                .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
+    }
+
+    private CommandResponse doTransferFunds(TransactionRequest request) {
+        validateAmount(request.getAmount());
+        validateDifferentAccounts(request.getFromBankAccountIban(), request.getToBankAccountIban());
+
+        BankAccount fromAccount = findByIbanForUpdate(request.getFromBankAccountIban());
+        BankAccount toAccount = findByIbanForUpdate(request.getToBankAccountIban());
+
+        assertAccountOwnedByCurrentUser(fromAccount);
+
+        if (fromAccount.getBalance().compareTo(request.getAmount()) < 0) {
+            throw new InsufficientFundsException(FUNDS_CANNOT_BELOW_ZERO);
+        }
+
+        fromAccount.setBalance(fromAccount.getBalance().subtract(request.getAmount()));
+        toAccount.setBalance(toAccount.getBalance().add(request.getAmount()));
+
+        saveAccounts(fromAccount, toAccount);
+        log.info(UPDATED_BankAccount_BALANCES, fromAccount.getBalance(), toAccount.getBalance());
+
+        Type type = typeService.getReferenceById(request.getTypeId());
+        CommandResponse txResponse = transactionService.create(
+                request, fromAccount, toAccount, type, OperationType.TRANSFER);
+
+        auditLog("TRANSFER", fromAccount.getIban(), toAccount.getIban(),
+                request.getAmount(), txResponse.getId());
+
+        return txResponse;
+    }
+
+    private CommandResponse doAddFunds(TransactionRequest request) {
+        validateAmount(request.getAmount());
+
+        BankAccount toAccount = findByIbanForUpdate(request.getToBankAccountIban());
+        assertAccountOwnedByCurrentUser(toAccount);
+
+        toAccount.setBalance(toAccount.getBalance().add(request.getAmount()));
+        saveAccounts(toAccount);
+        log.info(UPDATED_BankAccount_BALANCE, toAccount.getBalance());
+
+        Type type = typeService.getReferenceById(request.getTypeId());
+        CommandResponse txResponse = transactionService.create(
+                request, toAccount, toAccount, type, OperationType.DEPOSIT);
+
+        auditLog("DEPOSIT", toAccount.getIban(), toAccount.getIban(),
+                request.getAmount(), txResponse.getId());
+
+        return txResponse;
+    }
+
+    private CommandResponse doWithdrawFunds(TransactionRequest request) {
+        validateAmount(request.getAmount());
+
+        BankAccount fromAccount = findByIbanForUpdate(request.getFromBankAccountIban());
+        assertAccountOwnedByCurrentUser(fromAccount);
+
+        if (fromAccount.getBalance().compareTo(request.getAmount()) < 0) {
+            throw new InsufficientFundsException(FUNDS_CANNOT_BELOW_ZERO);
+        }
+
+        fromAccount.setBalance(fromAccount.getBalance().subtract(request.getAmount()));
+        saveAccounts(fromAccount);
+        log.info(UPDATED_BankAccount_BALANCE, fromAccount.getBalance());
+
+        Type type = typeService.getReferenceById(request.getTypeId());
+        CommandResponse txResponse = transactionService.create(
+                request, fromAccount, fromAccount, type, OperationType.WITHDRAW);
+
+        auditLog("WITHDRAW", fromAccount.getIban(), fromAccount.getIban(),
+                request.getAmount(), txResponse.getId());
+
+        return txResponse;
+    }
+
+    private BankAccount findByIbanForUpdate(String iban) {
+        return bankAccountRepository.findByIbanForUpdate(iban)
+                .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
+    }
+
+    private void assertAccountOwnedByCurrentUser(BankAccount account) {
+        if (!account.getUser().getId().equals(currentUserService.getCurrentUserId())) {
+            throw new AccessDeniedException("You do not have access to this account");
+        }
+    }
+
+    private void checkMoneyOperationRateLimit() {
+        rateLimitService.checkTransferLimit("user:" + currentUserService.getCurrentUserId());
+    }
+
+    private String hashRequest(TransactionRequest request) {
+        return IdempotencyService.hashTransactionRequest(
+                request.getFromBankAccountIban(),
+                request.getToBankAccountIban(),
+                request.getAmount().toPlainString(),
+                request.getTypeId());
+    }
+
+    private void validateAmount(BigDecimal amount) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Amount must be greater than zero");
+        }
+    }
+
+    private void validateDifferentAccounts(String fromIban, String toIban) {
+        if (fromIban.equalsIgnoreCase(toIban)) {
+            throw new IllegalArgumentException("Cannot transfer to the same account");
+        }
+    }
+
+    private void saveAccounts(BankAccount... accounts) {
+        try {
+            bankAccountRepository.saveAll(List.of(accounts));
+        } catch (OptimisticLockingFailureException e) {
+            throw new ConcurrentOperationException("Account was modified concurrently, please retry");
+        }
+    }
+
+    private void auditLog(String operation, String fromIban, String toIban,
+                          BigDecimal amount, Long transactionId) {
+        log.info("AUDIT operation={} fromIban={} toIban={} amount={} transactionId={} userId={}",
+                operation, fromIban, toIban, amount, transactionId, currentUserService.getCurrentUserId());
     }
 }

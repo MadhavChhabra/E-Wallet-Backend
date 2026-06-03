@@ -4,9 +4,9 @@ import com.ewallet.security.AuthEntryPointJwt;
 import com.ewallet.security.AuthTokenFilter;
 import com.ewallet.security.UserDetailsServiceImpl;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.annotation.Order;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
@@ -16,23 +16,14 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
-import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationEntryPoint;
-import org.springframework.security.oauth2.server.resource.web.access.BearerTokenAccessDeniedHandler;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
+import java.util.List;
 
-import static org.springframework.security.config.Customizer.withDefaults;
-
-/**
- * Configuration file used to configure security settings of the application
- */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
@@ -41,35 +32,24 @@ public class SecurityConfig {
 
     private final AuthEntryPointJwt authEntryPointJwt;
     private final UserDetailsServiceImpl userDetailsService;
+    private final AuthTokenFilter authTokenFilter;
 
-    @Bean
-    public JwtDecoder jwtDecoder() {
-        // Configure JWT decoder based on your requirements
-        // For example, if you have a JWT signing key, you can use it to create NimbusJwtDecoder
-        String jwtSigningKey = "your-jwt-signing-key";
-        byte[] keyBytes = jwtSigningKey.getBytes(StandardCharsets.UTF_8);
-        SecretKey secretKey = new SecretKeySpec(keyBytes, "HMACSHA256");
-
-        return NimbusJwtDecoder.withSecretKey(secretKey).build();
-    }
-
-
+    @Value("${app.cors.allowed-origins:http://localhost:8080}")
+    private String allowedOrigins;
 
     private static final String[] AUTH_WHITELIST = {
             "/api/v1/auth/**",
+            "/actuator/health",
+            "/actuator/info",
             "/v3/api-docs/**",
             "/v3/api-docs.yaml",
+            "/swagger-ui/**",
+            "/swagger-ui.html"
     };
 
     @Bean
-    public AuthTokenFilter authenticationJwtTokenFilter() {
-        return new AuthTokenFilter();
-    }
-
-
-    @Bean
     public DaoAuthenticationProvider authenticationProvider() {
-        final DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
+        DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
         authProvider.setUserDetailsService(userDetailsService);
         authProvider.setPasswordEncoder(passwordEncoder());
         return authProvider;
@@ -85,43 +65,32 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 
-    @Order(1)
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity httpSecurity) throws Exception {
         httpSecurity
-                .cors().and()
-                .csrf().disable()
-                .exceptionHandling().authenticationEntryPoint(authEntryPointJwt).and()
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(withDefaults())) // OAuth 2.0 configuration
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .csrf(csrf -> csrf.disable())
+                .exceptionHandling(ex -> ex.authenticationEntryPoint(authEntryPointJwt))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(AUTH_WHITELIST).permitAll()
+                        .anyRequest().authenticated())
+                .authenticationProvider(authenticationProvider())
+                .addFilterBefore(authTokenFilter, UsernamePasswordAuthenticationFilter.class);
 
-//                .oauth2ResourceServer(oauth2 -> oauth2.jwt(withDefaults()))
-
-                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS).and()
-
-                .authorizeHttpRequests()
-
-
-                .requestMatchers(AUTH_WHITELIST).permitAll()
-                .anyRequest().authenticated();
-
-        httpSecurity.authenticationProvider(authenticationProvider());
-        httpSecurity.addFilterBefore(authenticationJwtTokenFilter(), UsernamePasswordAuthenticationFilter.class);
         return httpSecurity.build();
     }
 
-    @Order(2)
     @Bean
-    public SecurityFilterChain refreshTokenSecurityFilterChain(HttpSecurity httpSecurity) throws Exception{
-        return httpSecurity
-                .securityMatcher(new AntPathRequestMatcher("/refresh-token/**"))
-                .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(withDefaults()))
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .exceptionHandling(ex -> {
-                    ex.authenticationEntryPoint(new BearerTokenAuthenticationEntryPoint());
-                    ex.accessDeniedHandler(new BearerTokenAccessDeniedHandler());
-                })
-                .httpBasic(withDefaults())
-                .build();
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(List.of(allowedOrigins.split(",")));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("*"));
+        configuration.setAllowCredentials(true);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
     }
 }

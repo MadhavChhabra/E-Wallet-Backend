@@ -14,8 +14,8 @@ import java.util.Set;
 @Entity
 @EqualsAndHashCode(of = {"iban"})
 @Table(indexes = {
-        @Index(name = "BankAccount_user_id_iban_key", columnList = "user_id, iban", unique = true),
-        @Index(name = "BankAccount_user_id_name_key", columnList = "user_id, name", unique = true)
+        @Index(name = "bank_account_user_id_iban_key", columnList = "user_id, iban", unique = true),
+        @Index(name = "bank_account_user_id_name_key", columnList = "user_id, name", unique = true)
 })
 public class BankAccount {
 
@@ -23,13 +23,17 @@ public class BankAccount {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    @Column(nullable = false)
+    private Long version;
+
     @Column(length = 34, nullable = false, unique = true)
     private String iban;
 
     @Column(length = 50, nullable = false)
     private String name;
 
-    @Column(nullable = false)
+    @Column(nullable = false, precision = 19, scale = 4)
     private BigDecimal balance;
 
     @ManyToOne(fetch = FetchType.LAZY)
@@ -39,26 +43,6 @@ public class BankAccount {
     @OneToMany(mappedBy = "fromBankAccount", cascade = CascadeType.ALL)
     private Set<Transaction> fromTransactions = new HashSet<>();
 
-    public void addFromTransaction(Transaction transaction) {
-        fromTransactions.add(transaction);
-        transaction.setFromBankAccount(this);
-    }
-
-    public void removeFromTransaction(Transaction transaction) {
-        fromTransactions.remove(transaction);
-        transaction.setFromBankAccount(null);
-    }
-
     @OneToMany(mappedBy = "toBankAccount", cascade = CascadeType.ALL)
     private Set<Transaction> toTransactions = new HashSet<>();
-
-    public void addToTransaction(Transaction transaction) {
-        toTransactions.add(transaction);
-        transaction.setToBankAccount(this);
-    }
-
-    public void removeToTransaction(Transaction transaction) {
-        toTransactions.remove(transaction);
-        transaction.setToBankAccount(null);
-    }
 }

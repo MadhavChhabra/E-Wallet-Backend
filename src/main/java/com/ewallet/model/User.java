@@ -36,20 +36,10 @@ public class User {
     private String password;
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
-    private Set<BankAccount> BankAccounts = new HashSet<>();
+    private Set<BankAccount> bankAccounts = new HashSet<>();
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<RefreshToken> refreshTokens;
-
-    public void addBankAccount(BankAccount BankAccount) {
-        BankAccounts.add(BankAccount);
-        BankAccount.setUser(this);
-    }
-
-    public void removeBankAccount(BankAccount BankAccount) {
-        BankAccounts.remove(BankAccount);
-        BankAccount.setUser(null);
-    }
 
     @ManyToMany(cascade = CascadeType.MERGE)
     @JoinTable(name = "user_role",
@@ -57,6 +47,16 @@ public class User {
             inverseJoinColumns = @JoinColumn(name = "role_id", referencedColumnName = "id")
     )
     private Set<Role> roles = new HashSet<>();
+
+    public void addBankAccount(BankAccount bankAccount) {
+        bankAccounts.add(bankAccount);
+        bankAccount.setUser(this);
+    }
+
+    public void removeBankAccount(BankAccount bankAccount) {
+        bankAccounts.remove(bankAccount);
+        bankAccount.setUser(null);
+    }
 
     public void addRole(Role role) {
         roles.add(role);

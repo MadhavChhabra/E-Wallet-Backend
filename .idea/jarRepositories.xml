@@ -7,6 +7,11 @@
       <option name="url" value="https://repo.maven.apache.org/maven2" />
     </remote-repository>
     <remote-repository>
+      <option name="id" value="MuleRepository" />
+      <option name="name" value="MuleRepository" />
+      <option name="url" value="https://repository.mulesoft.org/nexus-ee/content/repositories/releases-ee/" />
+    </remote-repository>
+    <remote-repository>
       <option name="id" value="central" />
       <option name="name" value="Maven Central repository" />
       <option name="url" value="https://repo1.maven.org/maven2" />
@@ -15,6 +20,11 @@
       <option name="id" value="jboss.community" />
       <option name="name" value="JBoss Community repository" />
       <option name="url" value="https://repository.jboss.org/nexus/content/repositories/public/" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="AnypointRepository" />
+      <option name="name" value="Exchange Repository" />
+      <option name="url" value="https://maven.anypoint.mulesoft.com/api/v2/organizations/9313fbe3-8cbb-42a2-87f3-4ab5a1f54345/maven" />
     </remote-repository>
   </component>
 </project>

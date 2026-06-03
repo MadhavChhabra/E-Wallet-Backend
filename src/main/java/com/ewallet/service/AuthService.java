@@ -12,178 +12,116 @@ import com.ewallet.repository.RefreshTokenRepository;
 import com.ewallet.repository.UserRepository;
 import com.ewallet.security.JwtUtils;
 import com.ewallet.security.UserDetailsImpl;
+import com.ewallet.security.UserDetailsServiceImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import static com.ewallet.common.Constants.*;
 
-/**
- * Service used for Authentication related operations
- */
 @Slf4j(topic = "AuthService")
 @Service
 @RequiredArgsConstructor
 public class AuthService {
 
-	private final AuthenticationManager authenticationManager;
-	private final JwtUtils jwtUtils;
-	private final UserRepository userRepository;
-	private final SignupRequestMapper signupRequestMapper;
-	private final RefreshTokenRepository refreshTokenRepo;
-	
+    private final AuthenticationManager authenticationManager;
+    private final JwtUtils jwtUtils;
+    private final UserRepository userRepository;
+    private final SignupRequestMapper signupRequestMapper;
+    private final RefreshTokenRepository refreshTokenRepo;
+    private final UserDetailsServiceImpl userDetailsService;
 
+    public JwtResponse login(LoginRequest request) {
+        try {
+            Authentication authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            request.getUsername().trim(),
+                            request.getPassword().trim()));
 
-	/**
-	 * Authenticates users by their credentials
-	 *
-	 * @param request
-	 * @return JwtResponse
-	 */
-//    public JwtResponse login(LoginRequest request) {
-//        final Authentication authentication = authenticationManager.authenticate(
-//                new UsernamePasswordAuthenticationToken(request.getUsername().trim(), request.getPassword().trim()));
-//
-//        SecurityContextHolder.getContext().setAuthentication(authentication);
-//        String jwt = jwtUtils.generateJwtToken(authentication);
-//
-//        final UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
-//        final List<String> roles = userDetails.getAuthorities().stream()
-//                .map(item -> item.getAuthority())
-//                .toList();
-//
-//        log.info(LOGGED_IN_USER, new Object[]{request.getUsername()});
-//        return JwtResponse
-//                .builder()
-//                .token(jwt)
-//                .id(userDetails.getId())
-//                .username(userDetails.getUsername())
-//                .firstName(userDetails.getFirstName())
-//                .lastName(userDetails.getLastName())
-//                .roles(roles).build();
-//    }
-	public JwtResponse login(LoginRequest request) {
-		try {
-			final Authentication authentication = authenticationManager.authenticate(
-					new UsernamePasswordAuthenticationToken(request.getUsername().trim(), request.getPassword().trim()));
+            SecurityContextHolder.getContext().setAuthentication(authentication);
 
-			SecurityContextHolder.getContext().setAuthentication(authentication);
+            String accessToken = jwtUtils.generateJwtToken(authentication);
+            UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+            List<String> roles = userDetails.getAuthorities().stream()
+                    .map(Object::toString)
+                    .toList();
 
-			// Generate access token
-			String accessToken = jwtUtils.generateJwtToken(authentication);
+            User user = userRepository.findByUsername(request.getUsername().trim())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "User not found"));
 
-			// Retrieve user details from authentication object
-			final UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
-			final List<String> roles = userDetails.getAuthorities().stream()
-					.map(item -> item.getAuthority())
-					.toList();
+            String refreshToken = jwtUtils.generateRefreshToken(authentication);
+            saveUserRefreshToken(user, refreshToken);
 
-			// Retrieve user entity from repository
-			User user = userRepository.findByUsername(request.getUsername())
-					.orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "User not found"));
+            log.info(LOGGED_IN_USER, userDetails.getUsername());
 
-			// Generate refresh token
-			String refreshToken = jwtUtils.generateRefreshToken(authentication);
+            return JwtResponse.builder()
+                    .token(accessToken)
+                    .refreshToken(refreshToken)
+                    .id(userDetails.getId())
+                    .username(userDetails.getUsername())
+                    .firstName(userDetails.getFirstName())
+                    .lastName(userDetails.getLastName())
+                    .roles(roles)
+                    .build();
+        } catch (BadCredentialsException e) {
+            log.warn("Failed login attempt for username: {}", request.getUsername());
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid username or password");
+        }
+    }
 
-			// Save refresh token for the user
-			saveUserRefreshToken(user, refreshToken);
+    public CommandResponse signup(SignupRequest request) {
+        if (userRepository.existsByUsernameIgnoreCase(request.getUsername().trim())) {
+            throw new ElementAlreadyExistsException(ALREADY_EXISTS_USER_NAME);
+        }
+        if (userRepository.existsByEmailIgnoreCase(request.getEmail().trim())) {
+            throw new ElementAlreadyExistsException(ALREADY_EXISTS_USER_EMAIL);
+        }
 
-			log.info("[AuthService:userSignInAuth] Access token for user: {} has been generated", userDetails.getUsername());
+        User user = signupRequestMapper.toEntity(request);
+        userRepository.save(user);
+        log.info(CREATED_USER, user.getUsername());
+        return CommandResponse.builder().id(user.getId()).build();
+    }
 
-			// Build and return the response
-			return JwtResponse.builder()
-					.token(accessToken)
-					.refreshToken(refreshToken)
-					.id(userDetails.getId())
-					.username(userDetails.getUsername())
-					.firstName(userDetails.getFirstName())
-					.lastName(userDetails.getLastName())
-					.roles(roles).build();
-		} catch (Exception e) {
-			log.error("[AuthService:userSignInAuth] Exception while authenticating the user: {}", e.getMessage());
-			throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Please try again", e);
-		}
-	}
+    private void saveUserRefreshToken(User user, String refreshToken) {
+        RefreshToken refreshTokenEntity = RefreshToken.builder()
+                .user(user)
+                .refreshToken(refreshToken)
+                .revoked(false)
+                .build();
+        refreshTokenRepo.save(refreshTokenEntity);
+    }
 
+    public JwtResponse getAccessTokenUsingRefreshToken(String authorizationHeader) {
+        if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Authorization header must be Bearer token");
+        }
 
-	/**
-	 * Registers a user by provided credentials and user info
-	 *
-	 * @param request
-	 * @return id of the registered user
-	 */
-	public CommandResponse signup(SignupRequest request) {
-		if (userRepository.existsByUsernameIgnoreCase(request.getUsername().trim()))
-			throw new ElementAlreadyExistsException(ALREADY_EXISTS_USER_NAME);
-		if (userRepository.existsByEmailIgnoreCase(request.getEmail().trim()))
-			throw new ElementAlreadyExistsException(ALREADY_EXISTS_USER_EMAIL);
+        String refreshToken = authorizationHeader.substring(7);
 
-		final User user = signupRequestMapper.toEntity(request);
-		userRepository.save(user);
-		log.info(CREATED_USER, new Object[]{user.getUsername()});
-		return CommandResponse.builder().id(user.getId()).build();
-	}
+        RefreshToken refreshTokenEntity = refreshTokenRepo.findByRefreshToken(refreshToken)
+                .filter(token -> !token.isRevoked())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Refresh token is invalid or revoked"));
 
-	private void saveUserRefreshToken(User userInfoEntity, String refreshToken) {
-		var refreshTokenEntity = RefreshToken.builder()
-				.user(userInfoEntity)
-				.refreshToken(refreshToken)
-				.revoked(false)
-				.build();
-		refreshTokenRepo.save(refreshTokenEntity);
-	}
+        User user = refreshTokenEntity.getUser();
+        UserDetailsImpl userDetails = (UserDetailsImpl) userDetailsService.loadUserByUsername(user.getUsername());
+        Authentication authentication = new UsernamePasswordAuthenticationToken(
+                userDetails, null, userDetails.getAuthorities());
 
-	public Object getAccessTokenUsingRefreshToken(String authorizationHeader) {
+        String accessToken = jwtUtils.generateJwtToken(authentication);
 
-//		if(!authorizationHeader.startsWith(TokenType.Bearer.name())){
-//			return new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,"Please verify your token type");
-//		}
-
-		final String refreshToken = authorizationHeader.substring(7);
-
-		//Find refreshToken from database and should not be revoked : Same thing can be done through filter.
-		var refreshTokenEntity = refreshTokenRepo.findByRefreshToken(refreshToken)
-				.filter(tokens-> !tokens.isRevoked())
-				.orElseThrow(()-> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,"Refresh token revoked"));
-
-		User userInfoEntity = refreshTokenEntity.getUser();
-
-		//Now create the Authentication object
-		Authentication authentication =  createAuthenticationObject(userInfoEntity);
-
-		//Use the authentication object to generate new accessToken as the Authentication object that we will have may not contain correct role.
-		String accessToken = jwtUtils.generateJwtToken(authentication);
-
-		return  JwtResponse.builder()
-				.token(accessToken)
-				.username(userInfoEntity.getUsername())
-				.build();
-	}
-
-	private static Authentication createAuthenticationObject(User userInfoEntity) {
-		// Extract user details from UserDetailsEntity
-		String username = userInfoEntity.getEmail();
-		String password = userInfoEntity.getPassword();
-		Set<com.ewallet.model.Role> roles = userInfoEntity.getRoles();
-
-		// Extract authorities from roles
-		Set<GrantedAuthority> authorities = roles.stream()
-				.map(role -> (GrantedAuthority) () -> role.getUsers().stream().findFirst().orElseThrow().getUsername()) // Assuming each role has only one user and User has a getUsername() method
-				.collect(Collectors.toSet());
-
-		return new UsernamePasswordAuthenticationToken(username, password, authorities);
-	}
+        return JwtResponse.builder()
+                .token(accessToken)
+                .username(user.getUsername())
+                .build();
+    }
 }
-
-
