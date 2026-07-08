@@ -1,0 +1,6 @@
+# Caddy obtains and renews a free Let's Encrypt certificate for $DOMAIN
+# automatically, and reverse-proxies to the Spring Boot app.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:8080
+}

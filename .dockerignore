@@ -1,0 +1,12 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+.git/
+.github/
+.idea/
+*.iml
+data/
+uploads/
+deploy/
+*.md
+.env
+src/main/resources/application-local.properties

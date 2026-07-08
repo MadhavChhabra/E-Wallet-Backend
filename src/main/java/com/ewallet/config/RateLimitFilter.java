@@ -26,7 +26,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        if ("POST".equalsIgnoreCase(request.getMethod()) && request.getRequestURI().contains("/api/v1/auth/login")) {
+        String uri = request.getRequestURI();
+        boolean isRateLimited = "POST".equalsIgnoreCase(request.getMethod())
+                && (uri.contains("/api/v1/auth/login") || uri.contains("/api/v1/auth/demo"));
+        if (isRateLimited) {
             try {
                 rateLimitService.checkLoginLimit(resolveClientKey(request));
             } catch (RateLimitExceededException ex) {

@@ -10,11 +10,13 @@ import com.ewallet.model.RefreshToken;
 import com.ewallet.model.User;
 import com.ewallet.repository.RefreshTokenRepository;
 import com.ewallet.repository.UserRepository;
+import com.ewallet.security.CurrentUserService;
 import com.ewallet.security.JwtUtils;
 import com.ewallet.security.UserDetailsImpl;
 import com.ewallet.security.UserDetailsServiceImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -22,8 +24,10 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.util.List;
 
 import static com.ewallet.common.Constants.*;
@@ -39,7 +43,12 @@ public class AuthService {
     private final SignupRequestMapper signupRequestMapper;
     private final RefreshTokenRepository refreshTokenRepo;
     private final UserDetailsServiceImpl userDetailsService;
+    private final CurrentUserService currentUserService;
 
+    @Value("${app.security.refreshTokenExpirationMs}")
+    private long refreshTokenExpirationMs;
+
+    @Transactional
     public JwtResponse login(LoginRequest request) {
         try {
             Authentication authentication = authenticationManager.authenticate(
@@ -92,15 +101,52 @@ public class AuthService {
         return CommandResponse.builder().id(user.getId()).build();
     }
 
+    /**
+     * Issues a fresh access + refresh token pair for an already-authenticated
+     * user (e.g. after a federated Google login). Mirrors what {@link #login}
+     * returns so the client handles both paths identically.
+     */
+    @Transactional
+    public JwtResponse issueTokensForUser(User user) {
+        UserDetailsImpl userDetails = (UserDetailsImpl) userDetailsService.loadUserByUsername(user.getUsername());
+        Authentication authentication = new UsernamePasswordAuthenticationToken(
+                userDetails, null, userDetails.getAuthorities());
+
+        String accessToken = jwtUtils.generateJwtToken(authentication);
+        String refreshToken = jwtUtils.generateRefreshToken(authentication);
+        saveUserRefreshToken(user, refreshToken);
+
+        List<String> roles = userDetails.getAuthorities().stream()
+                .map(Object::toString)
+                .toList();
+
+        return JwtResponse.builder()
+                .token(accessToken)
+                .refreshToken(refreshToken)
+                .id(userDetails.getId())
+                .username(userDetails.getUsername())
+                .firstName(userDetails.getFirstName())
+                .lastName(userDetails.getLastName())
+                .roles(roles)
+                .build();
+    }
+
     private void saveUserRefreshToken(User user, String refreshToken) {
         RefreshToken refreshTokenEntity = RefreshToken.builder()
                 .user(user)
                 .refreshToken(refreshToken)
                 .revoked(false)
+                .expiresAt(Instant.now().plusMillis(refreshTokenExpirationMs))
                 .build();
         refreshTokenRepo.save(refreshTokenEntity);
     }
 
+    /**
+     * Exchanges a valid refresh token for a fresh access token. The refresh token
+     * is rotated: the presented token is revoked and a new one is issued, so a
+     * leaked token cannot be replayed after it has been used once.
+     */
+    @Transactional
     public JwtResponse getAccessTokenUsingRefreshToken(String authorizationHeader) {
         if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Authorization header must be Bearer token");
@@ -108,20 +154,50 @@ public class AuthService {
 
         String refreshToken = authorizationHeader.substring(7);
 
+        // Cryptographically verify the token before trusting the DB lookup.
+        if (!jwtUtils.validateRefreshToken(refreshToken)) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Refresh token is invalid or expired");
+        }
+
         RefreshToken refreshTokenEntity = refreshTokenRepo.findByRefreshToken(refreshToken)
-                .filter(token -> !token.isRevoked())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Refresh token is invalid or revoked"));
+
+        if (refreshTokenEntity.isRevoked() || refreshTokenEntity.isExpired()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Refresh token is invalid or revoked");
+        }
 
         User user = refreshTokenEntity.getUser();
         UserDetailsImpl userDetails = (UserDetailsImpl) userDetailsService.loadUserByUsername(user.getUsername());
         Authentication authentication = new UsernamePasswordAuthenticationToken(
                 userDetails, null, userDetails.getAuthorities());
 
+        // Rotate: revoke the used token and mint a new refresh token.
+        refreshTokenEntity.setRevoked(true);
+        refreshTokenRepo.save(refreshTokenEntity);
+
         String accessToken = jwtUtils.generateJwtToken(authentication);
+        String newRefreshToken = jwtUtils.generateRefreshToken(authentication);
+        saveUserRefreshToken(user, newRefreshToken);
 
         return JwtResponse.builder()
                 .token(accessToken)
+                .refreshToken(newRefreshToken)
+                .id(userDetails.getId())
                 .username(user.getUsername())
                 .build();
+    }
+
+    /**
+     * Revokes every active refresh token for the authenticated user. The stateless
+     * access token remains valid until it expires (short-lived), but the session
+     * can no longer be refreshed.
+     */
+    @Transactional
+    public void logout() {
+        Long currentUserId = currentUserService.getCurrentUserId();
+        User user = userRepository.findById(currentUserId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User not found"));
+        int revoked = refreshTokenRepo.revokeAllForUser(user);
+        log.info("User logged out (username: {}) - revoked {} refresh token(s)", user.getUsername(), revoked);
     }
 }

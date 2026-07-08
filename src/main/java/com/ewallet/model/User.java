@@ -13,7 +13,9 @@ import java.util.Set;
 @Setter
 @Entity
 @EqualsAndHashCode(of = {"username"})
-@Table(name = "user")
+// Backtick-quoted so Hibernate emits a quoted identifier per dialect: `user` on
+// MySQL (same table as before) and "user" on H2, where USER is a reserved word.
+@Table(name = "`user`")
 public class User {
 
     @Id
@@ -34,6 +36,9 @@ public class User {
 
     @Column(length = 100, nullable = false)
     private String password;
+
+    @Column(name = "profile_image_filename", length = 100)
+    private String profileImageFilename;
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
     private Set<BankAccount> bankAccounts = new HashSet<>();

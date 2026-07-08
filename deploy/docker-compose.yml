@@ -1,0 +1,73 @@
+# Runs on the EC2 host. `docker compose up -d` brings up MySQL, the app (pulled
+# from GHCR), and Caddy (automatic Let's Encrypt HTTPS for $DOMAIN).
+# Values come from a sibling .env file (see .env.example) — never commit it.
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ewallet_new
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Keep MySQL modest on a 1 GB box.
+    command: ["--innodb-buffer-pool-size=128M", "--max-connections=50"]
+
+  app:
+    image: ${APP_IMAGE:-ghcr.io/madhavchhabra/e-wallet-backend:latest}
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      # No Flyway yet, so let Hibernate create the schema on first boot.
+      # For a real prod, switch to migrations and set this back to 'validate'.
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      DB_URL: jdbc:mysql://mysql:3306/ewallet_new
+      DB_USERNAME: root
+      DB_PASSWORD: ${DB_PASSWORD}
+      APP_SECURITY_JWT_SECRET: ${JWT_SECRET}
+      APP_SECURITY_REFRESH_TOKEN_SECRET: ${REFRESH_SECRET}
+      APP_CORS_ALLOWED_ORIGINS: ${CORS_ORIGINS}
+      # Razorpay (test mode)
+      RAZORPAY_ENABLED: ${RAZORPAY_ENABLED:-false}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      # Google OAuth
+      GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      # Password-reset OTP is logged (no SMTP configured for the demo).
+      APP_PASSWORD_RESET_EXPOSE_OTP: ${EXPOSE_OTP:-true}
+    volumes:
+      - app-uploads:/app/data/uploads
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  mysql-data:
+  app-uploads:
+  caddy-data:
+  caddy-config:

@@ -62,8 +62,16 @@ public class JwtUtils {
     }
 
     public boolean validateJwtToken(String authToken) {
+        return isTokenValid(authToken, jwtSecret);
+    }
+
+    public boolean validateRefreshToken(String refreshToken) {
+        return isTokenValid(refreshToken, refreshTokenSecret);
+    }
+
+    private boolean isTokenValid(String authToken, String secret) {
         try {
-            parseClaims(authToken, getSigningKey(jwtSecret));
+            parseClaims(authToken, getSigningKey(secret));
             return true;
         } catch (SignatureException e) {
             log.error(INVALID_JWT_SIGN, e.getMessage());

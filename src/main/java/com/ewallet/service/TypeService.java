@@ -1,5 +1,6 @@
 package com.ewallet.service;
 
+import com.ewallet.exception.NoSuchElementFoundException;
 import com.ewallet.model.Type;
 import com.ewallet.repository.TypeRepository;
 import lombok.RequiredArgsConstructor;
@@ -17,5 +18,11 @@ public class TypeService {
     @Cacheable(value = "transactionTypes", key = "#id")
     public Type getReferenceById(long id) {
         return typeRepository.getReferenceById(id);
+    }
+
+    @Cacheable(value = "transactionTypes", key = "'name:' + #name.toLowerCase()")
+    public Type getByName(String name) {
+        return typeRepository.findByNameIgnoreCase(name)
+                .orElseThrow(() -> new NoSuchElementFoundException("Transaction type not found: " + name));
     }
 }

@@ -76,6 +76,242 @@ Transaction → Type (Transfer, Deposit, Withdraw, etc.)
 IdempotencyRecord (per-user duplicate request tracking)
 ```
 
+## Architecture & Design (HLD / LLD)
+
+### High-Level Design — system context
+
+```mermaid
+flowchart TB
+    subgraph ClientTier["Client"]
+      FE["Flutter App<br/>Android · iOS · Web"]
+    end
+
+    subgraph BackendTier["E-Wallet Backend — Spring Boot monolith"]
+      API["REST API :8080<br/>/api/v1/**"]
+    end
+
+    subgraph ExternalTier["External services"]
+      RZP["Razorpay<br/>(TEST mode)"]
+      SMTP["SMTP server<br/>(OTP email)"]
+    end
+
+    DB[("MySQL")]
+
+    FE -->|"HTTPS + JWT (Bearer)"| API
+    FE -->|"Checkout SDK"| RZP
+    API -->|"JPA / HikariCP"| DB
+    API -->|"create order · verify signature"| RZP
+    RZP -->|"webhook: payment.captured"| API
+    API -->|"send OTP"| SMTP
+```
+
+### Component architecture — layers & filter chain
+
+```mermaid
+flowchart TB
+    Client(["Client"]) --> F1
+    subgraph Filters["Servlet filter chain"]
+      direction LR
+      F1["RequestIdFilter<br/>(X-Request-Id / MDC)"] --> F2["RateLimitFilter"] --> F3["JWT AuthTokenFilter"]
+    end
+    F3 --> C
+    subgraph Web["Controller layer (DTO in/out, @PreAuthorize)"]
+      C["Auth · User · BankAccount · Transaction<br/>Card · Image · Payment · PasswordReset"]
+    end
+    C --> S
+    subgraph Services["Service layer (business rules, @Transactional)"]
+      S["Auth · BankAccount · Transaction · Razorpay · Card<br/>PasswordReset · Idempotency · RateLimit<br/>FileStorage · Mail · Reconciliation (scheduled)"]
+    end
+    S --> R
+    subgraph Data["Repository layer (Spring Data JPA)"]
+      R["User · BankAccount · Transaction · Card · RefreshToken<br/>PaymentOrder · PasswordResetToken · IdempotencyRecord"]
+    end
+    R --> DB[("MySQL")]
+    S -.->|"reference data only"| Cache[("Caffeine cache<br/>roles · types · userDetails")]
+```
+
+### LLD — authentication & refresh-token rotation
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant FE as Flutter App
+    participant API as AuthController
+    participant AS as AuthService
+    participant DB as MySQL
+
+    U->>FE: username + password
+    FE->>API: POST /auth/login
+    API->>AS: authenticate()
+    AS->>DB: load user · verify BCrypt hash
+    AS-->>FE: access JWT + refresh JWT (persisted)
+    Note over FE: tokens stored in secure storage
+
+    FE->>API: call with expired access token
+    API-->>FE: 401 Unauthorized
+    FE->>API: POST /auth/refresh-token (refresh JWT)
+    API->>AS: validate signature + lookup
+    AS->>DB: revoke used token · save new token
+    AS-->>FE: new access + new refresh JWT (rotated)
+```
+
+### LLD — Sign in with Google
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant FE as Flutter App
+    participant G as Google Sign-In SDK
+    participant API as AuthController
+    participant GS as GoogleAuthService
+    participant DB as MySQL
+
+    U->>FE: tap "Sign in with Google"
+    FE->>G: interactive sign-in
+    G-->>FE: Google ID token
+    FE->>API: POST /auth/oauth/google { idToken }
+    API->>GS: loginWithGoogle(idToken)
+    GS->>GS: verify signature + audience + expiry<br/>(Google public keys)
+    GS->>DB: find user by email · else provision (ROLE_USER)
+    GS-->>FE: access JWT + refresh JWT (our tokens)
+```
+
+### LLD — fund transfer (idempotency + locking)
+
+```mermaid
+sequenceDiagram
+    participant FE as Flutter App
+    participant C as BankAccountController
+    participant IS as IdempotencyService
+    participant BS as BankAccountService
+    participant DB as MySQL
+
+    FE->>C: POST /bank-accounts/transfer (Idempotency-Key)
+    C->>IS: execute(key, userId, requestHash)
+    alt key already used (same payload)
+        IS-->>FE: cached result (no double-charge)
+    else new request
+        IS->>BS: doTransferFunds()
+        BS->>DB: SELECT ... FOR UPDATE (both accounts)
+        BS->>BS: assert ownership + sufficient funds
+        BS->>DB: debit + credit (@Version optimistic lock)
+        BS->>DB: insert Transaction (SUCCESS)
+        BS-->>IS: transactionId
+        IS->>DB: persist idempotency record
+        IS-->>FE: 201 Created
+    end
+```
+
+### LLD — Razorpay wallet top-up (verify + webhook)
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant FE as Flutter App
+    participant API as PaymentController
+    participant RS as RazorpayService
+    participant RZP as Razorpay
+    participant BS as BankAccountService
+    participant DB as MySQL
+
+    U->>FE: enter top-up amount
+    FE->>API: POST /payments/razorpay/order
+    API->>RS: createOrder()
+    RS->>RZP: Orders.create(amount, currency)
+    RS->>DB: save PaymentOrder (CREATED)
+    RS-->>FE: orderId · keyId · amount
+    FE->>RZP: open Checkout (SDK)
+    U->>RZP: pay with test card
+    RZP-->>FE: paymentId + signature
+    FE->>API: POST /payments/razorpay/verify
+    API->>RS: verifyPayment()
+    RS->>RS: HMAC-verify signature (secret, server-side)
+    RS->>BS: topUp() — idempotent on paymentId
+    BS->>DB: credit wallet + Transaction
+    RS->>DB: PaymentOrder = PAID
+    RS-->>FE: credited
+    RZP-->>API: (async) webhook payment.captured
+    API->>RS: handleWebhook() → order already PAID → no-op
+```
+
+### LLD — password reset via OTP
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant FE as Flutter App
+    participant API as PasswordResetController
+    participant PS as PasswordResetService
+    participant MAIL as MailService
+    participant DB as MySQL
+
+    U->>FE: enter email
+    FE->>API: POST /password-reset/request
+    API->>PS: requestReset(email)
+    PS->>DB: save BCrypt(OTP) + expiry
+    PS->>MAIL: email OTP (or log in dev)
+    API-->>FE: 200 (no user-existence leak)
+    U->>FE: enter OTP + new password
+    FE->>API: POST /password-reset/confirm
+    API->>PS: confirmReset(email, otp, newPassword)
+    PS->>DB: match OTP · set password · revoke sessions
+    API-->>FE: 200 OK
+```
+
+### Domain model (ER diagram)
+
+```mermaid
+erDiagram
+    USER ||--o{ BANK_ACCOUNT : owns
+    USER ||--o{ REFRESH_TOKEN : has
+    USER ||--o{ CARD : saves
+    USER ||--o{ PAYMENT_ORDER : initiates
+    USER ||--o{ PASSWORD_RESET_TOKEN : requests
+    USER }o--o{ ROLE : user_role
+    BANK_ACCOUNT ||--o{ TRANSACTION : from
+    BANK_ACCOUNT ||--o{ TRANSACTION : to
+    TYPE ||--o{ TRANSACTION : classifies
+
+    USER {
+      bigint id PK
+      string username UK
+      string email UK
+      string password
+      string profileImageFilename
+    }
+    BANK_ACCOUNT {
+      bigint id PK
+      string iban UK
+      decimal balance
+      bigint version
+    }
+    TRANSACTION {
+      bigint id PK
+      decimal amount
+      uuid referenceNumber UK
+      string status
+      string operationType
+    }
+    CARD {
+      bigint id PK
+      string last4
+      string brand
+      string token UK
+    }
+    PAYMENT_ORDER {
+      bigint id PK
+      string razorpayOrderId UK
+      decimal amount
+      string status
+    }
+    PASSWORD_RESET_TOKEN {
+      bigint id PK
+      string otpHash
+      datetime expiresAt
+      boolean consumed
+    }
+```
+
 ## Key Design Decisions
 
 **Atomic wallet operations** — Transfers debit one account and credit another in one transaction. If anything fails, everything rolls back.
@@ -113,16 +349,82 @@ Base URL: `http://localhost:8080`
 |--------|----------|------|-------------|
 | POST | `/api/v1/auth/signup` | No | Register user |
 | POST | `/api/v1/auth/login` | No | Get access + refresh token |
-| POST | `/api/v1/auth/refresh-token` | No | Refresh access token |
+| POST | `/api/v1/auth/refresh-token` | No | Refresh access token (rotates the refresh token) |
+| POST | `/api/v1/auth/oauth/google` | No | Sign in with Google (verifies ID token, issues JWTs) |
+| POST | `/api/v1/auth/demo` | No | One-click demo: provision a pre-populated account + tokens |
+| POST | `/api/v1/auth/logout` | Yes | Revoke all refresh tokens for the user |
+| POST | `/api/v1/auth/password-reset/request` | No | Email a one-time reset code |
+| POST | `/api/v1/auth/password-reset/verify` | No | Verify an OTP without consuming it |
+| POST | `/api/v1/auth/password-reset/confirm` | No | Set a new password using the OTP |
 | GET | `/api/v1/bank-accounts` | Yes | List current user's accounts (paginated) |
 | POST | `/api/v1/bank-accounts` | Yes | Create account |
 | POST | `/api/v1/bank-accounts/transfer` | Yes | Transfer between accounts |
 | POST | `/api/v1/bank-accounts/add-funds` | Yes | Deposit |
 | POST | `/api/v1/bank-accounts/withdraw-funds` | Yes | Withdraw |
 | GET | `/api/v1/transactions` | Yes | List current user's transactions |
+| GET | `/api/v1/users/me` | Yes | Current user's profile |
+| PUT | `/api/v1/users/me/profile-image` | Yes | Set profile image (by uploaded filename) |
+| PUT | `/api/v1/users/me/change-password` | Yes | Change password (requires current password) |
+| GET | `/api/v1/cards` | Yes | List saved cards (masked) |
+| POST | `/api/v1/cards` | Yes | Save a card (tokenized; PAN/CVV never stored) |
+| DELETE | `/api/v1/cards/{id}` | Yes | Delete a saved card |
+| POST | `/api/v1/images` | Yes | Upload an image (multipart) |
+| GET | `/api/v1/images/{filename}` | No | Fetch an image by opaque filename |
+| POST | `/api/v1/payments/razorpay/order` | Yes | Create a Razorpay top-up order (TEST mode) |
+| POST | `/api/v1/payments/razorpay/verify` | Yes | Verify payment signature and credit wallet |
+| POST | `/api/v1/payments/razorpay/webhook` | No* | Authoritative credit via Razorpay webhook (*HMAC-verified) |
 | GET | `/actuator/health` | No | Health check |
 
 Interactive docs: [http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html)
+
+### Razorpay top-up (TEST mode)
+
+Wallet top-ups go through Razorpay in test mode — a real gateway flow with no real
+money. The server creates the order and **verifies the payment signature with the
+secret key server-side** before crediting the wallet. Crediting is idempotent on
+the Razorpay payment id, so a duplicated callback cannot double-credit.
+
+Two crediting paths, both idempotent:
+
+1. **Client verify** (`/verify`) — instant UX right after the Checkout succeeds.
+2. **Webhook** (`/webhook`, `payment.captured`) — the **authoritative** path. Even
+   if the app dies before calling `/verify`, a captured payment still credits the
+   wallet exactly once. The raw body is HMAC-verified against the webhook secret.
+
+Enable it with environment variables (free test keys:
+<https://dashboard.razorpay.com/app/keys>):
+
+```
+RAZORPAY_ENABLED=true
+RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxxx
+RAZORPAY_KEY_SECRET=your_test_secret        # server-side only
+```
+
+### Key environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `SPRING_PROFILES_ACTIVE` | `dev` / `prod` / `test` |
+| `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` | Datasource (required in prod) |
+| `APP_SECURITY_JWT_SECRET` | JWT signing secret (≥32 chars, required in prod) |
+| `APP_SECURITY_REFRESH_TOKEN_SECRET` | Refresh-token signing secret (≥32 chars) |
+| `APP_CORS_ALLOWED_ORIGINS` | Comma-separated allowed origins |
+| `RAZORPAY_ENABLED`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay test integration |
+| `GOOGLE_OAUTH_ENABLED`, `GOOGLE_CLIENT_ID` | Google Sign-In (client id may be comma-separated audiences) |
+| `MAIL_ENABLED`, `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` | SMTP for OTP email |
+| `APP_PASSWORD_RESET_EXPOSE_OTP` | Dev only: return the OTP in the API/log |
+| `APP_STORAGE_TYPE` | `local` (default) or `s3` |
+| `APP_STORAGE_LOCATION` | Directory for uploaded images (local mode) |
+| `APP_STORAGE_S3_BUCKET`, `APP_STORAGE_S3_REGION` | S3 bucket + region (s3 mode; creds from the default AWS chain / EC2 role) |
+| `DEMO_ENABLED` | Enable the one-click demo-account endpoint (default true) |
+
+### One-click demo
+
+`POST /api/v1/auth/demo` provisions a **fresh, isolated user** pre-populated with
+two accounts (balances that reconcile) and a realistic transaction history, then
+returns tokens — so a first-time visitor lands on a filled dashboard. Seeding runs
+through the real transfer/deposit/withdraw services under a temporary security
+context, so the data is authentic. Rate-limited per IP; disable with `DEMO_ENABLED=false`.
 
 ### Authentication
 

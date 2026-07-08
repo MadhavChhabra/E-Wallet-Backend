@@ -126,6 +126,38 @@ public class BankAccountService {
                 });
     }
 
+    /**
+     * Credits a wallet from a successfully verified external top-up (e.g. a
+     * Razorpay payment). Ownership of the target account is enforced, and the
+     * operation is made idempotent on the payment reference so a duplicated
+     * gateway callback cannot credit the wallet twice.
+     */
+    @Transactional
+    public CommandResponse topUp(String iban, BigDecimal amount, String idempotencyKey) {
+        return idempotencyService.execute(
+                idempotencyKey,
+                currentUserService.getCurrentUserId(),
+                "TOPUP",
+                IdempotencyService.hashTransactionRequest(iban, iban, amount.toPlainString(), 0L),
+                () -> doTopUp(iban, amount, true));
+    }
+
+    /**
+     * Credits a wallet from a trusted server-side event (e.g. a verified Razorpay
+     * webhook) where there is no authenticated user in context. Ownership was
+     * already bound when the payment order was created, so it is not re-checked
+     * here; the caller supplies the owning user id for idempotency and audit.
+     */
+    @Transactional
+    public CommandResponse systemTopUp(String iban, BigDecimal amount, String idempotencyKey, Long userId) {
+        return idempotencyService.execute(
+                idempotencyKey,
+                userId,
+                "TOPUP",
+                IdempotencyService.hashTransactionRequest(iban, iban, amount.toPlainString(), 0L),
+                () -> doTopUp(iban, amount, false));
+    }
+
     @Transactional
     public CommandResponse withdrawFunds(TransactionRequest request, String idempotencyKey) {
         return idempotencyService.execute(
@@ -221,6 +253,33 @@ public class BankAccountService {
 
         auditLog("DEPOSIT", toAccount.getIban(), toAccount.getIban(),
                 request.getAmount(), txResponse.getId());
+
+        return txResponse;
+    }
+
+    private CommandResponse doTopUp(String iban, BigDecimal amount, boolean checkOwnership) {
+        validateAmount(amount);
+
+        BankAccount toAccount = findByIbanForUpdate(iban);
+        if (checkOwnership) {
+            assertAccountOwnedByCurrentUser(toAccount);
+        }
+
+        toAccount.setBalance(toAccount.getBalance().add(amount));
+        saveAccounts(toAccount);
+        log.info(UPDATED_BankAccount_BALANCE, toAccount.getBalance());
+
+        TransactionRequest txRequest = new TransactionRequest();
+        txRequest.setAmount(amount);
+        txRequest.setDescription("Wallet top-up via Razorpay");
+        txRequest.setFromBankAccountIban(iban);
+        txRequest.setToBankAccountIban(iban);
+
+        Type type = typeService.getByName("Top Up");
+        CommandResponse txResponse = transactionService.create(
+                txRequest, toAccount, toAccount, type, OperationType.DEPOSIT);
+
+        auditLog("TOPUP", iban, iban, amount, txResponse.getId());
 
         return txResponse;
     }
