@@ -44,6 +44,12 @@ services:
       # Google OAuth
       GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      # File storage: 'local' (Docker volume below) or 's3'. For s3 the app
+      # reads AWS credentials from the EC2 instance role (default AWS chain),
+      # so no keys are passed here — just the bucket + region.
+      APP_STORAGE_TYPE: ${APP_STORAGE_TYPE:-local}
+      APP_STORAGE_S3_BUCKET: ${APP_STORAGE_S3_BUCKET:-}
+      APP_STORAGE_S3_REGION: ${APP_STORAGE_S3_REGION:-ap-south-1}
       # Password-reset OTP is logged (no SMTP configured for the demo).
       APP_PASSWORD_RESET_EXPOSE_OTP: ${EXPOSE_OTP:-true}
     volumes:
