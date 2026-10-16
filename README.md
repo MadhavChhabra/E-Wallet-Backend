@@ -4,6 +4,8 @@ REST API for a digital wallet platform. Users can register, manage bank accounts
 
 Built with Spring Boot as a single deployable service — no microservices, no message brokers. The focus is on correct financial operations, clear layering, and patterns you'd actually use in a production monolith.
 
+**Live demo:** [madhavchhabra.github.io/E-Wallet-Frontend](https://madhavchhabra.github.io/E-Wallet-Frontend/). Tap "Explore Live Demo" for a pre-filled account; Razorpay runs in test mode, so no real money moves. Flutter client: [E-Wallet-Frontend](https://github.com/MadhavChhabra/E-Wallet-Frontend).
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -330,6 +332,7 @@ erDiagram
 
 ```
 src/main/java/com/ewallet/
+├── common/          # Shared constants and messages
 ├── config/          # Security, cache, filters, OpenAPI
 ├── controller/    # REST endpoints
 ├── dto/             # Request/response objects and MapStruct mappers
@@ -455,7 +458,7 @@ Error:
 ```json
 {
   "status": 400,
-  "message": "Transfer amount should be higher than or equal to BankAccount balance",
+  "message": "Insufficient balance: amount exceeds the available account balance",
   "errorCode": "INSUFFICIENT_FUNDS"
 }
 ```

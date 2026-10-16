@@ -46,7 +46,7 @@ public final class Constants {
     public static final String CREATED_TRANSACTION = "Transaction is created (from: {} --- to: {} --- amount: {})";
     public static final String UPDATED_BankAccount = "BankAccount is updated (iban: {} --- name: {} --- balance: {})";
     public static final String DELETED_BankAccount = "BankAccount is deleted (iban: {} --- name: {} --- balance: {})";
-    public static final String FUNDS_CANNOT_BELOW_ZERO = "Transfer amount should be higher than or equal to BankAccount balance";
+    public static final String FUNDS_CANNOT_BELOW_ZERO = "Insufficient balance: amount exceeds the available account balance";
     public static final String UPDATED_BankAccount_BALANCE = "BankAccount balance is updated (New BankAccount Balance: {})";
     public static final String UPDATED_BankAccount_BALANCES = "BankAccount balances are updated (BankAccount of sender: {} --- BankAccount of receiver: {})";
 }
