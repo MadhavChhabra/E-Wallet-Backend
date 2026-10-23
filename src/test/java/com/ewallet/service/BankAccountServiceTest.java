@@ -2,7 +2,6 @@ package com.ewallet.service;
 
 import com.ewallet.dto.mapper.BankAccountRequestMapper;
 import com.ewallet.dto.mapper.BankAccountResponseMapper;
-import com.ewallet.dto.mapper.BankAccountTransactionRequestMapper;
 import com.ewallet.dto.request.TransactionRequest;
 import com.ewallet.dto.response.CommandResponse;
 import com.ewallet.exception.InsufficientFundsException;
@@ -36,8 +35,6 @@ class BankAccountServiceTest {
     private BankAccountRequestMapper bankAccountRequestMapper;
     @Mock
     private BankAccountResponseMapper bankAccountResponseMapper;
-    @Mock
-    private BankAccountTransactionRequestMapper bankAccountTransactionRequestMapper;
     @Mock
     private TypeService typeService;
     @Mock
