@@ -179,11 +179,11 @@ All authenticated endpoints require: `Authorization: Bearer <access_token>`
 | GET | `/{id}` | Account by ID (must be owned) |
 | GET | `/iban/{iban}` | Account by IBAN (must be owned) |
 | GET | `/users/{userId}` | Accounts for user (must be current user) |
-| POST | `/` | Create account |
-| PUT | `/{id}` | Update account name/IBAN |
+| POST | `/` | Create account (opens at 0; any `balance` in the body is ignored) |
+| PUT | `/{id}` | Rename account (IBAN and balance cannot be changed) |
 | DELETE | `/{id}` | Delete account |
 | POST | `/transfer` | Transfer between accounts |
-| POST | `/add-funds` | Deposit to account |
+| POST | `/add-funds` | Deposit to account (`ROLE_ADMIN` only) |
 | POST | `/withdraw-funds` | Withdraw from account |
 
 **Create account body:**
@@ -375,7 +375,7 @@ Same transaction pattern as transfer, but:
 
 ### 5.5 Account Creation Side Effect
 
-Creating an account with initial balance also creates an `INITIAL_DEPOSIT` transaction recording that starting balance. This gives a complete audit trail from account birth.
+An account created through the API always opens at 0; money arrives only through a top-up or a transfer. Only server-side seeding (the one-click demo) opens accounts with a balance, through `BankAccountService.createWithOpeningBalance`, which also records an `INITIAL_DEPOSIT` transaction so reconciliation balances from account birth.
 
 ### 5.6 Reconciliation Job
 

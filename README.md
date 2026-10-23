@@ -360,9 +360,9 @@ Base URL: `http://localhost:8080`
 | POST | `/api/v1/auth/password-reset/verify` | No | Verify an OTP without consuming it |
 | POST | `/api/v1/auth/password-reset/confirm` | No | Set a new password using the OTP |
 | GET | `/api/v1/bank-accounts` | Yes | List current user's accounts (paginated) |
-| POST | `/api/v1/bank-accounts` | Yes | Create account |
+| POST | `/api/v1/bank-accounts` | Yes | Create account (always opens at 0; fund it by top-up or transfer) |
 | POST | `/api/v1/bank-accounts/transfer` | Yes | Transfer between accounts |
-| POST | `/api/v1/bank-accounts/add-funds` | Yes | Deposit |
+| POST | `/api/v1/bank-accounts/add-funds` | Admin | Deposit with no payment behind it (admin only) |
 | POST | `/api/v1/bank-accounts/withdraw-funds` | Yes | Withdraw |
 | GET | `/api/v1/transactions` | Yes | List current user's transactions |
 | GET | `/api/v1/users/me` | Yes | Current user's profile |
