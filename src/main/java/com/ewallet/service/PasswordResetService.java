@@ -103,13 +103,17 @@ public class PasswordResetService {
     /**
      * Verifies an OTP without consuming it, so the client can gate the
      * new-password screen. Increments the attempt counter on failure.
+     *
+     * <p>A wrong code is reported by throwing, and a plain {@code @Transactional}
+     * would roll back the attempt it just recorded, leaving guessing unlimited.
+     * {@code noRollbackFor} keeps the attempt (and the lock-out) committed.
      */
-    @Transactional
+    @Transactional(noRollbackFor = ResponseStatusException.class)
     public void verifyOtp(String email, String otp) {
         validateOtp(email, otp);
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = ResponseStatusException.class)
     public void confirmReset(String email, String otp, String newPassword) {
         User user = validateOtp(email, otp).getUser();
 
