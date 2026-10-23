@@ -18,7 +18,7 @@ public class TransactionResponse {
     private String createdAt;
     private UUID referenceNumber;
     private Status status;
-    private BankAccountResponse fromBankAccount;
-    private BankAccountResponse toBankAccount;
+    private TransactionPartyResponse fromBankAccount;
+    private TransactionPartyResponse toBankAccount;
     private TypeResponse type;
 }

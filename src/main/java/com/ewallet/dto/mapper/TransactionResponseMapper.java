@@ -19,8 +19,8 @@ public interface TransactionResponseMapper {
     // Flutter clients parse (dd-MM-yyyy HH:mm:ss).
     DateTimeFormatter CREATED_AT_FORMAT = DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm:ss");
 
-    Transaction toEntity(TransactionResponse dto);
-
+    // Both sides map to TransactionPartyResponse, which has no balance, email or roles: a
+    // transaction is visible to both parties, so it must not expose either one's private data.
     @Mapping(target = "createdAt", ignore = true)
     TransactionResponse toDto(Transaction entity);
 
