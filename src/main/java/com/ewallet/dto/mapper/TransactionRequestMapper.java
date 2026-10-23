@@ -14,6 +14,9 @@ import java.time.ZoneId;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface TransactionRequestMapper {
 
+    // A transaction's id is always generated: copying one from the body made save() merge into,
+    // and overwrite, whichever existing transaction had that id.
+    @Mapping(target = "id", ignore = true)
     @Mapping(target = "operationType", ignore = true)
     @Mapping(target = "status", ignore = true)
     @Mapping(target = "referenceNumber", ignore = true)
