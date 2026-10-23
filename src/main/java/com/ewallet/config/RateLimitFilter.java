@@ -27,8 +27,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String uri = request.getRequestURI();
+        // Password reset shares the login bucket: a 6-digit code is only as strong as the
+        // number of guesses allowed against it.
         boolean isRateLimited = "POST".equalsIgnoreCase(request.getMethod())
-                && (uri.contains("/api/v1/auth/login") || uri.contains("/api/v1/auth/demo"));
+                && (uri.contains("/api/v1/auth/login") || uri.contains("/api/v1/auth/demo")
+                || uri.contains("/api/v1/auth/password-reset/"));
         if (isRateLimited) {
             try {
                 rateLimitService.checkLoginLimit(resolveClientKey(request));
