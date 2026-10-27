@@ -112,8 +112,7 @@ public class DemoService {
         req.setUserId(userId);
         req.setIban(iban);
         req.setName(name);
-        req.setBalance(new java.math.BigDecimal(balance));
-        bankAccountService.create(req);
+        bankAccountService.createWithOpeningBalance(req, new java.math.BigDecimal(balance));
     }
 
     private void transfer(String fromIban, String toIban, String amount) {

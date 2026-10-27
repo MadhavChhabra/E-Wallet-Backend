@@ -78,7 +78,9 @@ public class BankAccountController {
                 .body(new ApiResponse<>(Instant.now(clock).toEpochMilli(), SUCCESS, response));
     }
 
-    @PreAuthorize("hasAuthority('ROLE_USER')")
+    // Crediting an account with no payment behind it creates money, so it is not a user action.
+    // Users fund wallets through a top-up or a transfer; the demo seeder calls the service directly.
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     @PostMapping("/add-funds")
     public ResponseEntity<ApiResponse<CommandResponse>> addFunds(
             @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

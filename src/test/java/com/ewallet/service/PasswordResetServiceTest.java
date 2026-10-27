@@ -5,6 +5,7 @@ import com.ewallet.model.User;
 import com.ewallet.repository.PasswordResetTokenRepository;
 import com.ewallet.repository.RefreshTokenRepository;
 import com.ewallet.repository.UserRepository;
+import com.ewallet.security.UserDetailsCacheEvictor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -38,13 +39,15 @@ class PasswordResetServiceTest {
     private PasswordEncoder passwordEncoder;
     @Mock
     private MailService mailService;
+    @Mock
+    private UserDetailsCacheEvictor userDetailsCacheEvictor;
 
     private PasswordResetService service;
 
     @BeforeEach
     void setUp() {
         service = new PasswordResetService(userRepository, tokenRepository, refreshTokenRepository,
-                passwordEncoder, mailService);
+                passwordEncoder, mailService, userDetailsCacheEvictor);
         ReflectionTestUtils.setField(service, "otpLength", 6);
         ReflectionTestUtils.setField(service, "otpExpiryMinutes", 10L);
         ReflectionTestUtils.setField(service, "maxAttempts", 5);

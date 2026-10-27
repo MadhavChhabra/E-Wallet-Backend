@@ -11,6 +11,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Mapper used for mapping SignupRequest fields
@@ -37,18 +38,17 @@ public abstract class SignupRequestMapper {
     @Mapping(target = "lastName", expression = "java(org.apache.commons.text.WordUtils.capitalizeFully(dto.getLastName()))")
     @Mapping(target = "username", expression = "java(dto.getUsername().trim().toLowerCase())")
     @Mapping(target = "email", expression = "java(dto.getEmail().trim().toLowerCase())")
+    @Mapping(target = "id", ignore = true)
     @Mapping(target = "password", ignore = true)
     @Mapping(target = "roles", ignore = true)
     public abstract User toEntity(SignupRequest dto);
 
+    /** Every self-registered user is an ordinary user; roles are never taken from the request. */
     @AfterMapping
     void setToEntityFields(@MappingTarget User entity, SignupRequest dto) {
         entity.setPassword(passwordEncoder.encode(dto.getPassword()));
 
-        final List<RoleType> roleTypes = dto.getRoles().stream()
-                .map(RoleType::valueOf)
-                .toList();
-        final List<Role> roles = roleService.getReferenceByTypeIsIn(new HashSet<>(roleTypes));
+        final List<Role> roles = roleService.getReferenceByTypeIsIn(Set.of(RoleType.ROLE_USER));
         entity.setRoles(new HashSet<>(roles));
     }
 }

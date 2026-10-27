@@ -24,6 +24,9 @@ public abstract class BankAccountRequestMapper {
     @Mapping(target = "name", expression = "java(org.apache.commons.text.WordUtils.capitalizeFully(dto.getName()))")
     @Mapping(target = "iban", expression = "java(org.apache.commons.lang3.StringUtils.upperCase(dto.getIban()))")
     @Mapping(target = "user", ignore = true)
+    @Mapping(target = "id", ignore = true)
+    @Mapping(target = "version", ignore = true)
+    @Mapping(target = "balance", ignore = true)
     public abstract BankAccount toEntity(BankAccountRequest dto);
 
     public abstract BankAccountRequest toDto(BankAccount entity);

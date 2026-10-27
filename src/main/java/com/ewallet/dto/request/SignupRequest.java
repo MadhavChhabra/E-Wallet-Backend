@@ -5,15 +5,15 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
-import java.util.Set;
-
 /**
- * Data Transfer Object for Signup request
+ * Data Transfer Object for Signup request.
+ *
+ * <p>Deliberately has no {@code id} or {@code roles}: an id would make {@code save()} overwrite an
+ * existing user, and client-chosen roles would allow self-promotion. Older clients that still send
+ * {@code roles} are fine, since unknown JSON fields are ignored.
  */
 @Data
 public class SignupRequest {
-
-    private Long id;
 
     @Size(min = 3, max = 50, message = "{firstName.size}")
     @NotBlank(message = "{firstName.notblank}")
@@ -35,6 +35,4 @@ public class SignupRequest {
     @Size(min = 6, max = 100, message = "{password.size}")
     @NotBlank(message = "password.notblank}")
     private String password;
-
-    private Set<String> roles;
 }

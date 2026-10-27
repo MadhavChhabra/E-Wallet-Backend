@@ -318,7 +318,7 @@ erDiagram
 
 **Atomic wallet operations** — Transfers debit one account and credit another in one transaction. If anything fails, everything rolls back.
 
-**Concurrency control** — Pessimistic write locks during balance updates, plus optimistic locking (`@Version`) on accounts to catch concurrent modifications.
+**Concurrency control** — Pessimistic write locks during balance updates, plus optimistic locking (`@Version`) on accounts to catch concurrent modifications. Both accounts are locked in IBAN order, so concurrent opposite transfers (A→B and B→A) can't deadlock.
 
 **Idempotency** — Money endpoints accept an optional `Idempotency-Key` header so clients can safely retry without double-charging.
 
@@ -360,9 +360,9 @@ Base URL: `http://localhost:8080`
 | POST | `/api/v1/auth/password-reset/verify` | No | Verify an OTP without consuming it |
 | POST | `/api/v1/auth/password-reset/confirm` | No | Set a new password using the OTP |
 | GET | `/api/v1/bank-accounts` | Yes | List current user's accounts (paginated) |
-| POST | `/api/v1/bank-accounts` | Yes | Create account |
+| POST | `/api/v1/bank-accounts` | Yes | Create account (always opens at 0; fund it by top-up or transfer) |
 | POST | `/api/v1/bank-accounts/transfer` | Yes | Transfer between accounts |
-| POST | `/api/v1/bank-accounts/add-funds` | Yes | Deposit |
+| POST | `/api/v1/bank-accounts/add-funds` | Admin | Deposit with no payment behind it (admin only) |
 | POST | `/api/v1/bank-accounts/withdraw-funds` | Yes | Withdraw |
 | GET | `/api/v1/transactions` | Yes | List current user's transactions |
 | GET | `/api/v1/users/me` | Yes | Current user's profile |

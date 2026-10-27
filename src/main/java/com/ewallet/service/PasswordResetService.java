@@ -5,6 +5,7 @@ import com.ewallet.model.User;
 import com.ewallet.repository.PasswordResetTokenRepository;
 import com.ewallet.repository.RefreshTokenRepository;
 import com.ewallet.repository.UserRepository;
+import com.ewallet.security.UserDetailsCacheEvictor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -41,6 +42,7 @@ public class PasswordResetService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final MailService mailService;
+    private final UserDetailsCacheEvictor userDetailsCacheEvictor;
 
     @Value("${app.password-reset.otp-length:6}")
     private int otpLength;
@@ -58,11 +60,13 @@ public class PasswordResetService {
                                 PasswordResetTokenRepository tokenRepository,
                                 RefreshTokenRepository refreshTokenRepository,
                                 PasswordEncoder passwordEncoder,
-                                MailService mailService) {
+                                MailService mailService,
+                                UserDetailsCacheEvictor userDetailsCacheEvictor) {
         this.userRepository = userRepository;
         this.tokenRepository = tokenRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.passwordEncoder = passwordEncoder;
+        this.userDetailsCacheEvictor = userDetailsCacheEvictor;
         this.mailService = mailService;
     }
 
@@ -103,18 +107,23 @@ public class PasswordResetService {
     /**
      * Verifies an OTP without consuming it, so the client can gate the
      * new-password screen. Increments the attempt counter on failure.
+     *
+     * <p>A wrong code is reported by throwing, and a plain {@code @Transactional}
+     * would roll back the attempt it just recorded, leaving guessing unlimited.
+     * {@code noRollbackFor} keeps the attempt (and the lock-out) committed.
      */
-    @Transactional
+    @Transactional(noRollbackFor = ResponseStatusException.class)
     public void verifyOtp(String email, String otp) {
         validateOtp(email, otp);
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = ResponseStatusException.class)
     public void confirmReset(String email, String otp, String newPassword) {
         User user = validateOtp(email, otp).getUser();
 
         user.setPassword(passwordEncoder.encode(newPassword.trim()));
         userRepository.save(user);
+        userDetailsCacheEvictor.evictAfterCommit(user.getUsername());
 
         tokenRepository.consumeAllForUser(user);
         int revoked = refreshTokenRepository.revokeAllForUser(user);

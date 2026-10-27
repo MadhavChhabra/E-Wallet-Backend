@@ -7,6 +7,7 @@ import com.ewallet.model.User;
 import com.ewallet.repository.RefreshTokenRepository;
 import com.ewallet.repository.UserRepository;
 import com.ewallet.security.CurrentUserService;
+import com.ewallet.security.UserDetailsCacheEvictor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -30,6 +31,7 @@ public class UserService {
     private final CurrentUserService currentUserService;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final UserDetailsCacheEvictor userDetailsCacheEvictor;
 
     /**
      * Fetches a single user reference (entity) by the given id
@@ -63,6 +65,7 @@ public class UserService {
         }
         user.setPassword(passwordEncoder.encode(newPassword));
         userRepository.save(user);
+        userDetailsCacheEvictor.evictAfterCommit(user.getUsername());
         int revoked = refreshTokenRepository.revokeAllForUser(user);
         log.info("Password changed for userId={} (revoked {} session(s))", user.getId(), revoked);
     }

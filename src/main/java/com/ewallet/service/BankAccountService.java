@@ -2,7 +2,6 @@ package com.ewallet.service;
 
 import com.ewallet.dto.mapper.BankAccountRequestMapper;
 import com.ewallet.dto.mapper.BankAccountResponseMapper;
-import com.ewallet.dto.mapper.BankAccountTransactionRequestMapper;
 import com.ewallet.dto.request.BankAccountRequest;
 import com.ewallet.dto.request.TransactionRequest;
 import com.ewallet.dto.response.BankAccountResponse;
@@ -18,6 +17,7 @@ import com.ewallet.repository.BankAccountRepository;
 import com.ewallet.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.text.WordUtils;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Locale;
 
 import static com.ewallet.common.Constants.*;
 
@@ -39,7 +40,6 @@ public class BankAccountService {
     private final TransactionService transactionService;
     private final BankAccountRequestMapper bankAccountRequestMapper;
     private final BankAccountResponseMapper bankAccountResponseMapper;
-    private final BankAccountTransactionRequestMapper bankAccountTransactionRequestMapper;
     private final TypeService typeService;
     private final CurrentUserService currentUserService;
     private final IdempotencyService idempotencyService;
@@ -75,8 +75,29 @@ public class BankAccountService {
                 .map(bankAccountResponseMapper::toDto);
     }
 
+    /**
+     * Opens an account for the current user. It always opens empty: money arrives only through a
+     * top-up or a transfer, never through the request body.
+     */
     @Transactional
     public CommandResponse create(BankAccountRequest request) {
+        return open(request, BigDecimal.ZERO);
+    }
+
+    /**
+     * Server-side seeding only (the one-click demo): opens an account with a balance the server
+     * chose, recorded as an INITIAL_DEPOSIT so reconciliation still balances. No controller calls
+     * this, so no client can pick its own balance.
+     */
+    @Transactional
+    public CommandResponse createWithOpeningBalance(BankAccountRequest request, BigDecimal openingBalance) {
+        if (openingBalance == null || openingBalance.signum() < 0) {
+            throw new IllegalArgumentException("Opening balance must be zero or more");
+        }
+        return open(request, openingBalance);
+    }
+
+    private CommandResponse open(BankAccountRequest request, BigDecimal openingBalance) {
         currentUserService.assertUserIdMatchesCurrentUser(request.getUserId());
 
         if (bankAccountRepository.existsByIbanIgnoreCase(request.getIban())) {
@@ -87,15 +108,22 @@ public class BankAccountService {
         }
 
         BankAccount bankAccount = bankAccountRequestMapper.toEntity(request);
+        bankAccount.setBalance(openingBalance);
         bankAccountRepository.save(bankAccount);
         log.info(CREATED_BankAccount, bankAccount.getIban(), bankAccount.getName(), bankAccount.getBalance());
 
-        CommandResponse txResponse = transactionService.create(
-                bankAccountTransactionRequestMapper.toTransactionDto(request),
-                bankAccount, bankAccount, typeService.getReferenceById(1L), OperationType.INITIAL_DEPOSIT);
+        Long openingTxId = null;
+        if (openingBalance.signum() > 0) {
+            TransactionRequest opening = new TransactionRequest();
+            opening.setAmount(openingBalance);
+            opening.setDescription("Initial balance");
+            opening.setFromBankAccountIban(bankAccount.getIban());
+            opening.setToBankAccountIban(bankAccount.getIban());
+            openingTxId = transactionService.create(opening, bankAccount, bankAccount,
+                    typeService.getReferenceById(1L), OperationType.INITIAL_DEPOSIT).getId();
+        }
 
-        auditLog("CREATE_ACCOUNT", bankAccount.getIban(), bankAccount.getIban(),
-                request.getBalance(), txResponse.getId());
+        auditLog("CREATE_ACCOUNT", bankAccount.getIban(), bankAccount.getIban(), openingBalance, openingTxId);
 
         return CommandResponse.builder().id(bankAccount.getId()).build();
     }
@@ -179,19 +207,22 @@ public class BankAccountService {
                 .orElseThrow(() -> new NoSuchElementFoundException(NOT_FOUND_BankAccount));
         assertAccountOwnedByCurrentUser(foundAccount);
 
-        if (!request.getIban().equalsIgnoreCase(foundAccount.getIban())
-                && bankAccountRepository.existsByIbanIgnoreCase(request.getIban())) {
-            throw new ElementAlreadyExistsException(ALREADY_EXISTS_BankAccount_iban);
+        // Only the name is editable. The IBAN identifies the account in every past transaction,
+        // and the balance changes only through money operations.
+        if (!request.getIban().equalsIgnoreCase(foundAccount.getIban())) {
+            throw new IllegalArgumentException("An account's IBAN cannot be changed");
         }
         if (!request.getName().equalsIgnoreCase(foundAccount.getName())
                 && bankAccountRepository.existsByUserIdAndNameIgnoreCase(request.getUserId(), request.getName())) {
             throw new ElementAlreadyExistsException(ALREADY_EXISTS_BankAccount_NAME);
         }
 
-        BankAccount bankAccount = bankAccountRequestMapper.toEntity(request);
-        bankAccountRepository.save(bankAccount);
-        log.info(UPDATED_BankAccount, bankAccount.getIban(), bankAccount.getName(), bankAccount.getBalance());
-        return CommandResponse.builder().id(bankAccount.getId()).build();
+        // Change the loaded (managed) entity rather than saving a fresh copy built from the
+        // request: the copy had no @Version, so save() tried to persist it as new and failed.
+        foundAccount.setName(WordUtils.capitalizeFully(request.getName()));
+        saveAccounts(foundAccount);
+        log.info(UPDATED_BankAccount, foundAccount.getIban(), foundAccount.getName(), foundAccount.getBalance());
+        return CommandResponse.builder().id(foundAccount.getId()).build();
     }
 
     @Transactional
@@ -212,8 +243,16 @@ public class BankAccountService {
         validateAmount(request.getAmount());
         validateDifferentAccounts(request.getFromBankAccountIban(), request.getToBankAccountIban());
 
-        BankAccount fromAccount = findByIbanForUpdate(request.getFromBankAccountIban());
-        BankAccount toAccount = findByIbanForUpdate(request.getToBankAccountIban());
+        String fromIban = request.getFromBankAccountIban();
+        String toIban = request.getToBankAccountIban();
+
+        // Lock both rows in IBAN order, whatever the transfer direction, so two opposite
+        // transfers can never wait on each other (no circular wait, so no deadlock).
+        boolean fromFirst = normalizeIban(fromIban).compareTo(normalizeIban(toIban)) < 0;
+        BankAccount first = findByIbanForUpdate(fromFirst ? fromIban : toIban);
+        BankAccount second = findByIbanForUpdate(fromFirst ? toIban : fromIban);
+        BankAccount fromAccount = fromFirst ? first : second;
+        BankAccount toAccount = fromFirst ? second : first;
 
         assertAccountOwnedByCurrentUser(fromAccount);
 
@@ -341,6 +380,12 @@ public class BankAccountService {
         if (fromIban.equalsIgnoreCase(toIban)) {
             throw new IllegalArgumentException("Cannot transfer to the same account");
         }
+    }
+
+    // Request IBANs arrive as the client typed them, and MySQL matches them case-insensitively,
+    // so "de89..." and "DE89..." lock the same row. Compare one form to get one lock order.
+    private String normalizeIban(String iban) {
+        return iban.trim().toUpperCase(Locale.ROOT);
     }
 
     private void saveAccounts(BankAccount... accounts) {
