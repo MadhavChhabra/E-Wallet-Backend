@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Locale;
 
 import static com.ewallet.common.Constants.*;
 
@@ -242,8 +243,16 @@ public class BankAccountService {
         validateAmount(request.getAmount());
         validateDifferentAccounts(request.getFromBankAccountIban(), request.getToBankAccountIban());
 
-        BankAccount fromAccount = findByIbanForUpdate(request.getFromBankAccountIban());
-        BankAccount toAccount = findByIbanForUpdate(request.getToBankAccountIban());
+        String fromIban = request.getFromBankAccountIban();
+        String toIban = request.getToBankAccountIban();
+
+        // Lock both rows in IBAN order, whatever the transfer direction, so two opposite
+        // transfers can never wait on each other (no circular wait, so no deadlock).
+        boolean fromFirst = normalizeIban(fromIban).compareTo(normalizeIban(toIban)) < 0;
+        BankAccount first = findByIbanForUpdate(fromFirst ? fromIban : toIban);
+        BankAccount second = findByIbanForUpdate(fromFirst ? toIban : fromIban);
+        BankAccount fromAccount = fromFirst ? first : second;
+        BankAccount toAccount = fromFirst ? second : first;
 
         assertAccountOwnedByCurrentUser(fromAccount);
 
@@ -371,6 +380,12 @@ public class BankAccountService {
         if (fromIban.equalsIgnoreCase(toIban)) {
             throw new IllegalArgumentException("Cannot transfer to the same account");
         }
+    }
+
+    // Request IBANs arrive as the client typed them, and MySQL matches them case-insensitively,
+    // so "de89..." and "DE89..." lock the same row. Compare one form to get one lock order.
+    private String normalizeIban(String iban) {
+        return iban.trim().toUpperCase(Locale.ROOT);
     }
 
     private void saveAccounts(BankAccount... accounts) {
