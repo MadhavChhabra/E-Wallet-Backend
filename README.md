@@ -318,7 +318,7 @@ erDiagram
 
 **Atomic wallet operations** — Transfers debit one account and credit another in one transaction. If anything fails, everything rolls back.
 
-**Concurrency control** — Pessimistic write locks during balance updates, plus optimistic locking (`@Version`) on accounts to catch concurrent modifications.
+**Concurrency control** — Pessimistic write locks during balance updates, plus optimistic locking (`@Version`) on accounts to catch concurrent modifications. Both accounts are locked in IBAN order, so concurrent opposite transfers (A→B and B→A) can't deadlock.
 
 **Idempotency** — Money endpoints accept an optional `Idempotency-Key` header so clients can safely retry without double-charging.
 
